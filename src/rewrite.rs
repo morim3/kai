@@ -13,12 +13,12 @@ use crate::scope::FunctionSignature;
 ///
 /// Uses the source text of the first matched block as the function body,
 /// with variable names replaced according to the signature mapping.
-/// `ref_stmts` must be the parsed AST statements of the reference block.
+/// `ref_node_positions` are pre-collected AST node positions from `collect_node_positions`.
 /// The `scope` determines the base indentation of the generated function.
 pub fn generate_function_def(
     source: &str,
     reference_block: &MatchedBlock,
-    ref_stmts: &[Stmt],
+    ref_node_positions: &[(usize, usize)],
     sig: &FunctionSignature,
     func_name: &str,
     scope: &ScopeContext,
@@ -46,12 +46,12 @@ pub fn generate_function_def(
         }
     }
 
-    // Use AST node positions for precise replacement (avoids
+    // Use pre-collected AST node positions for precise replacement (avoids
     // false matches in string literals and comments).
     let body = replace_names_ast(
         &full_body_text,
         source,
-        ref_stmts,
+        ref_node_positions,
         reference_block.start_offset,
         original_indent.len(),
         &rename_map,
@@ -102,16 +102,23 @@ pub fn generate_call(sig: &FunctionSignature, block_index: usize, func_name: &st
 /// Apply the refactoring: replace matched blocks with function calls,
 /// and insert the function definition at the appropriate scope.
 ///
-/// `ref_stmts` must be the parsed AST statements of block 0 (the reference).
+/// `ref_node_positions` are pre-collected AST node positions for block 0 (the reference).
 pub fn apply_refactoring(
     source: &str,
     blocks: &[MatchedBlock],
-    ref_stmts: &[Stmt],
+    ref_node_positions: &[(usize, usize)],
     sig: &FunctionSignature,
     func_name: &str,
     scope: &ScopeContext,
 ) -> String {
-    let func_def = generate_function_def(source, &blocks[0], ref_stmts, sig, func_name, scope);
+    let func_def = generate_function_def(
+        source,
+        &blocks[0],
+        ref_node_positions,
+        sig,
+        func_name,
+        scope,
+    );
 
     // Build edits sorted by offset (descending so we can apply from end to start).
     let mut edits: Vec<(usize, usize, String)> = blocks
@@ -187,35 +194,28 @@ fn reindent(text: &str, old_indent: &str, new_indent: &str) -> String {
         .join("\n")
 }
 
-/// Replace variable names and literals in `body_text` using AST node positions.
+/// Replace variable names and literals in `body_text` using pre-collected AST node positions.
 ///
 /// Only replaces at positions where the parser identified actual Name or Literal
 /// tokens, avoiding false matches in string literals and comments.
 ///
 /// * `body_text` — the block text with leading indent prepended.
 /// * `source` — the original full source (used to extract text at AST positions).
-/// * `stmts` — parsed AST statements of the block (positions relative to full source).
+/// * `node_positions` — pre-collected `(byte_offset, byte_len)` from `collect_node_positions`.
 /// * `block_start` — byte offset of the block in the original source.
 /// * `indent_len` — length of the prepended indent (shifts offsets in body_text).
 /// * `rename_map` — maps original text (variable name or literal) → new name.
 fn replace_names_ast(
     body_text: &str,
     source: &str,
-    stmts: &[Stmt],
+    node_positions: &[(usize, usize)],
     block_start: usize,
     indent_len: usize,
     rename_map: &HashMap<&str, &str>,
 ) -> String {
-    let mut collector = NodeCollector {
-        positions: Vec::new(),
-    };
-    for stmt in stmts {
-        collector.visit_stmt(stmt);
-    }
-
     // For each collected node, extract its source text and check the rename map.
     let mut replacements: Vec<(usize, usize, &str)> = Vec::new();
-    for &(src_offset, len) in &collector.positions {
+    for &(src_offset, len) in node_positions {
         let original_text = &source[src_offset..src_offset + len];
         if let Some(&new_name) = rename_map.get(original_text) {
             let body_offset = src_offset - block_start + indent_len;
@@ -231,6 +231,20 @@ fn replace_names_ast(
         result.replace_range(*offset..*offset + *len, new_name);
     }
     result
+}
+
+/// Collect byte positions of all `Expr::Name` and literal nodes from AST statements.
+///
+/// Returns `Vec<(source_byte_offset, byte_length)>` as owned data that can
+/// outlive the AST borrow.
+pub fn collect_node_positions(stmts: &[Stmt]) -> Vec<(usize, usize)> {
+    let mut collector = NodeCollector {
+        positions: Vec::new(),
+    };
+    for stmt in stmts {
+        collector.visit_stmt(stmt);
+    }
+    collector.positions
 }
 
 /// Collects byte positions of all `Expr::Name` and literal nodes in an AST subtree.
@@ -322,11 +336,12 @@ mod tests {
 
         let source = "a = \"hello a world\"\nb = a + 1\n";
         let stmts = parse_stmts(source);
+        let positions = collect_node_positions(&stmts);
         let mut rename_map = HashMap::new();
         rename_map.insert("a", "arg_0");
 
         // body_text == source (no prepend), block_start = 0, indent_len = 0
-        let result = replace_names_ast(source, source, &stmts, 0, 0, &rename_map);
+        let result = replace_names_ast(source, source, &positions, 0, 0, &rename_map);
         // The 'a' in the string literal must NOT be replaced.
         assert_eq!(result, "arg_0 = \"hello a world\"\nb = arg_0 + 1\n");
     }

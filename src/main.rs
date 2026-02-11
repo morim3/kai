@@ -24,11 +24,30 @@ struct Cli {
     /// Custom name for the extracted function (default: extracted_func_0)
     #[arg(long)]
     name: Option<String>,
+
+    /// Interactive mode: review and customize each step
+    #[arg(long, short)]
+    interactive: bool,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let source = std::fs::read_to_string(&cli.file)?;
+
+    if cli.interactive {
+        let file_path = if cli.write || cli.diff {
+            Some(cli.file.as_str())
+        } else {
+            None
+        };
+        return pym::interactive::run_interactive(
+            &source,
+            cli.start_line,
+            cli.end_line,
+            file_path,
+            cli.diff,
+        );
+    }
 
     let options = pym::ExtractOptions {
         func_name: cli.name,

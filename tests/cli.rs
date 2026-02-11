@@ -80,3 +80,29 @@ fn write_flag_modifies_file() {
 fn nonexistent_file_fails() {
     pym().args(["nonexistent.py", "1", "2"]).assert().failure();
 }
+
+/// `--interactive` flag is accepted (exits with error due to non-tty stdin, but doesn't
+/// fail with "unknown argument").
+#[test]
+fn interactive_flag_accepted() {
+    pym()
+        .args([
+            "tests/fixtures/simple_assignment/input.py",
+            "2",
+            "3",
+            "--interactive",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown").not());
+}
+
+/// `-i` short flag works the same as `--interactive`.
+#[test]
+fn interactive_short_flag_accepted() {
+    pym()
+        .args(["tests/fixtures/simple_assignment/input.py", "2", "3", "-i"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown").not());
+}
