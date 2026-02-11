@@ -29,7 +29,7 @@ pub struct ScopeContext {
 
 /// Find the innermost scope body containing the given line range.
 ///
-/// Recursively drills into `FunctionDef`, `AsyncFunctionDef`, and `ClassDef`
+/// Recursively drills into `FunctionDef` (including async) and `ClassDef`
 /// to find the deepest body that fully contains `target_start..=target_end`.
 ///
 /// Returns the body slice and a `ScopeContext` describing the scope.
