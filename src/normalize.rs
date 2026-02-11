@@ -62,7 +62,11 @@ pub fn select_stmts<'a>(
 /// Convert a byte offset to a 1-based line number.
 pub fn line_of_offset(source: &str, offset: usize) -> usize {
     let offset = offset.min(source.len());
-    source[..offset].chars().filter(|&c| c == '\n').count() + 1
+    source.as_bytes()[..offset]
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count()
+        + 1
 }
 
 /// A visitor that walks the AST and produces a structural hash.
@@ -74,6 +78,16 @@ struct NormalizeVisitor {
     hasher: FxHasher,
     /// Maps original variable names to sequential IDs (insertion order).
     var_map: Vec<String>,
+}
+
+/// Match an enum value to its variant name and hash it as a tag string.
+macro_rules! hash_enum_tag {
+    ($self:expr, $val:expr, $( $variant:pat => $tag:expr ),+ $(,)?) => {{
+        let tag = match $val {
+            $( $variant => $tag, )+
+        };
+        $self.hash_tag(tag);
+    }};
 }
 
 impl NormalizeVisitor {
@@ -208,25 +222,20 @@ impl<'a> Visitor<'a> for NormalizeVisitor {
     }
 
     fn visit_expr_context(&mut self, ctx: &'a ExprContext) {
-        let tag = match ctx {
+        hash_enum_tag!(self, ctx,
             ExprContext::Load => "Load",
             ExprContext::Store => "Store",
             ExprContext::Del => "Del",
             ExprContext::Invalid => "Invalid",
-        };
-        self.hash_tag(tag);
+        );
     }
 
     fn visit_bool_op(&mut self, op: &'a BoolOp) {
-        let tag = match op {
-            BoolOp::And => "And",
-            BoolOp::Or => "Or",
-        };
-        self.hash_tag(tag);
+        hash_enum_tag!(self, op, BoolOp::And => "And", BoolOp::Or => "Or");
     }
 
     fn visit_operator(&mut self, op: &'a Operator) {
-        let tag = match op {
+        hash_enum_tag!(self, op,
             Operator::Add => "Add",
             Operator::Sub => "Sub",
             Operator::Mult => "Mult",
@@ -240,22 +249,20 @@ impl<'a> Visitor<'a> for NormalizeVisitor {
             Operator::BitXor => "BitXor",
             Operator::BitAnd => "BitAnd",
             Operator::MatMult => "MatMult",
-        };
-        self.hash_tag(tag);
+        );
     }
 
     fn visit_unary_op(&mut self, op: &'a UnaryOp) {
-        let tag = match op {
+        hash_enum_tag!(self, op,
             UnaryOp::Invert => "Invert",
             UnaryOp::Not => "Not",
             UnaryOp::UAdd => "UAdd",
             UnaryOp::USub => "USub",
-        };
-        self.hash_tag(tag);
+        );
     }
 
     fn visit_cmp_op(&mut self, op: &'a CmpOp) {
-        let tag = match op {
+        hash_enum_tag!(self, op,
             CmpOp::Eq => "Eq",
             CmpOp::NotEq => "NotEq",
             CmpOp::Lt => "Lt",
@@ -266,8 +273,7 @@ impl<'a> Visitor<'a> for NormalizeVisitor {
             CmpOp::IsNot => "IsNot",
             CmpOp::In => "In",
             CmpOp::NotIn => "NotIn",
-        };
-        self.hash_tag(tag);
+        );
     }
 }
 

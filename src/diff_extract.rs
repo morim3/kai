@@ -79,6 +79,12 @@ fn diff_stmt_bodies(a: &[Stmt], b: &[Stmt], sa: &str, sb: &str, out: &mut Vec<Di
     }
 }
 
+fn diff_expr_slices(a: &[Expr], b: &[Expr], sa: &str, sb: &str, out: &mut Vec<Divergence>) {
+    for (ea, eb) in a.iter().zip(b.iter()) {
+        diff_exprs(ea, eb, sa, sb, out);
+    }
+}
+
 fn diff_exprs(a: &Expr, b: &Expr, sa: &str, sb: &str, out: &mut Vec<Divergence>) {
     match (a, b) {
         (Expr::Name(a), Expr::Name(b)) => {
@@ -111,15 +117,11 @@ fn diff_exprs(a: &Expr, b: &Expr, sa: &str, sb: &str, out: &mut Vec<Divergence>)
         }
         (Expr::Call(a), Expr::Call(b)) => {
             diff_exprs(&a.func, &b.func, sa, sb, out);
-            for (aa, ab) in a.arguments.args.iter().zip(b.arguments.args.iter()) {
-                diff_exprs(aa, ab, sa, sb, out);
-            }
+            diff_expr_slices(&a.arguments.args, &b.arguments.args, sa, sb, out);
         }
         (Expr::Compare(a), Expr::Compare(b)) => {
             diff_exprs(&a.left, &b.left, sa, sb, out);
-            for (ca, cb) in a.comparators.iter().zip(b.comparators.iter()) {
-                diff_exprs(ca, cb, sa, sb, out);
-            }
+            diff_expr_slices(&a.comparators, &b.comparators, sa, sb, out);
         }
         (Expr::Attribute(a), Expr::Attribute(b)) => {
             diff_exprs(&a.value, &b.value, sa, sb, out);
@@ -129,14 +131,10 @@ fn diff_exprs(a: &Expr, b: &Expr, sa: &str, sb: &str, out: &mut Vec<Divergence>)
             diff_exprs(&a.slice, &b.slice, sa, sb, out);
         }
         (Expr::List(a), Expr::List(b)) => {
-            for (ea, eb) in a.elts.iter().zip(b.elts.iter()) {
-                diff_exprs(ea, eb, sa, sb, out);
-            }
+            diff_expr_slices(&a.elts, &b.elts, sa, sb, out);
         }
         (Expr::Tuple(a), Expr::Tuple(b)) => {
-            for (ea, eb) in a.elts.iter().zip(b.elts.iter()) {
-                diff_exprs(ea, eb, sa, sb, out);
-            }
+            diff_expr_slices(&a.elts, &b.elts, sa, sb, out);
         }
         (Expr::If(a), Expr::If(b)) => {
             diff_exprs(&a.test, &b.test, sa, sb, out);

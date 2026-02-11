@@ -2,6 +2,8 @@ use ruff_python_ast::visitor::{Visitor, walk_expr, walk_stmt};
 use ruff_python_ast::{Expr, ExprContext, Stmt};
 use rustc_hash::FxHashSet;
 
+use crate::diff_extract::Divergence;
+
 /// The interface of an extracted function block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockInterface {
@@ -65,9 +67,7 @@ pub struct FunctionSignature {
 /// `all_divergences[i]` contains divergences between block 0 and block `i+1`.
 /// Returns a `Vec<Vec<String>>` where `result[param_idx][block_idx]` is the literal
 /// value for that parameter in that block.
-fn collect_literal_params(
-    all_divergences: &[Vec<crate::diff_extract::Divergence>],
-) -> Vec<Vec<String>> {
+fn collect_literal_params(all_divergences: &[Vec<Divergence>]) -> Vec<Vec<String>> {
     let first_divs = match all_divergences.first() {
         Some(d) => d,
         None => return Vec::new(),
@@ -76,7 +76,7 @@ fn collect_literal_params(
     let mut params: Vec<Vec<String>> = Vec::new();
 
     for div in first_divs {
-        if let crate::diff_extract::Divergence::Literal(val_0, val_1) = div {
+        if let Divergence::Literal(val_0, val_1) = div {
             let num_blocks = all_divergences.len() + 1; // +1 for block 0 itself
             let mut per_block = Vec::with_capacity(num_blocks);
             per_block.push(val_0.clone()); // block 0
@@ -88,7 +88,7 @@ fn collect_literal_params(
                 let value = other_divs
                     .iter()
                     .filter_map(|od| match od {
-                        crate::diff_extract::Divergence::Literal(_, v) => Some(v),
+                        Divergence::Literal(_, v) => Some(v),
                         _ => None,
                     })
                     .nth(current_lit_idx)
@@ -111,8 +111,8 @@ fn collect_literal_params(
 /// `divergences` contains the structural differences between each block and block 0.
 pub fn unify_signatures(
     blocks: &[(&[Stmt], &[Stmt])],
-    all_divergences: &[Vec<crate::diff_extract::Divergence>],
-    custom_params: &Option<Vec<String>>,
+    all_divergences: &[Vec<Divergence>],
+    custom_params: Option<&[String]>,
 ) -> FunctionSignature {
     let interfaces: Vec<BlockInterface> = blocks
         .iter()
@@ -355,7 +355,7 @@ mod tests {
                 (block_b.as_slice(), after_b.as_slice()),
             ],
             &[divs],
-            &None,
+            None,
         );
 
         assert_eq!(sig.params, vec!["arg_0", "arg_1"]);
@@ -375,14 +375,14 @@ mod tests {
         let src_b = "z = x + y";
         let divs = crate::diff_extract::extract_divergences(&block_a, &block_b, src_a, src_b);
 
-        let custom = Some(vec!["lhs".to_string(), "rhs".to_string()]);
+        let custom = vec!["lhs".to_string(), "rhs".to_string()];
         let sig = unify_signatures(
             &[
                 (block_a.as_slice(), after_a.as_slice()),
                 (block_b.as_slice(), after_b.as_slice()),
             ],
             &[divs],
-            &custom,
+            Some(&custom),
         );
 
         assert_eq!(sig.params, vec!["lhs", "rhs"]);
@@ -398,7 +398,6 @@ mod tests {
 
     #[test]
     fn collect_literal_params_no_literals() {
-        use crate::diff_extract::Divergence;
         let divs = vec![vec![Divergence::Name("a".into(), "b".into())]];
         let result = collect_literal_params(&divs);
         assert!(result.is_empty());
@@ -425,7 +424,7 @@ mod tests {
                 (block_c.as_slice(), &[]),
             ],
             &[divs_ab, divs_ac],
-            &None,
+            None,
         );
 
         // 2 literal divergences become 2 params (no variable inputs)
