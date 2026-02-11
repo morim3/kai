@@ -50,7 +50,7 @@ pub struct FunctionSignature {
     pub params: Vec<String>,
     /// Return variable names for the extracted function.
     pub returns: Vec<String>,
-    /// For each matched block: the mapping from param name -> original variable name.
+    /// For each matched block: the mapping from param name -> original variable name/value.
     pub block_arg_maps: Vec<Vec<String>>,
     /// For each matched block: the mapping from return name -> original variable name.
     pub block_return_maps: Vec<Vec<String>>,
@@ -60,7 +60,11 @@ pub struct FunctionSignature {
 /// compute a unified function signature and variable mappings.
 ///
 /// Each entry in `blocks` is `(block_stmts, after_stmts)`.
-pub fn unify_signatures(blocks: &[(&[Stmt], &[Stmt])]) -> FunctionSignature {
+/// `divergences` contains the structural differences between each block and block 0.
+pub fn unify_signatures(
+    blocks: &[(&[Stmt], &[Stmt])],
+    all_divergences: &[Vec<crate::diff_extract::Divergence>],
+) -> FunctionSignature {
     let interfaces: Vec<BlockInterface> = blocks
         .iter()
         .map(|(block, after)| analyze_block(block, after))
@@ -70,10 +74,64 @@ pub fn unify_signatures(blocks: &[(&[Stmt], &[Stmt])]) -> FunctionSignature {
     let param_count = interfaces.first().map_or(0, |i| i.inputs.len());
     let return_count = interfaces.first().map_or(0, |i| i.outputs.len());
 
-    let params: Vec<String> = (0..param_count).map(|i| format!("arg_{i}")).collect();
+    // Collect literal divergences as additional parameters.
+    // Each literal divergence adds a param; we use the values from each block as args.
+    let mut literal_param_values: Vec<Vec<String>> = Vec::new(); // [param_idx][block_idx]
+
+    if let Some(first_divs) = all_divergences.first() {
+        for div in first_divs {
+            if let crate::diff_extract::Divergence::Literal(val_0, val_1) = div {
+                // Initialize with block 0's value, then block 1's value.
+                let mut per_block = vec![val_0.clone()];
+                per_block.push(val_1.clone());
+                // For remaining blocks (if any), find the corresponding divergence.
+                for other_divs in all_divergences.iter().skip(1) {
+                    // Find the matching literal divergence by position.
+                    let mut lit_idx = 0;
+                    let mut found = false;
+                    for od in other_divs {
+                        if let crate::diff_extract::Divergence::Literal(_, v) = od {
+                            if lit_idx == literal_param_values.len() {
+                                per_block.push(v.clone());
+                                found = true;
+                                break;
+                            }
+                            lit_idx += 1;
+                        }
+                    }
+                    if !found {
+                        per_block.push(val_0.clone()); // fallback
+                    }
+                }
+                literal_param_values.push(per_block);
+            }
+        }
+    }
+
+    let lit_count = literal_param_values.len();
+    let total_params = param_count + lit_count;
+
+    let params: Vec<String> = (0..total_params).map(|i| format!("arg_{i}")).collect();
     let returns: Vec<String> = (0..return_count).map(|i| format!("ret_{i}")).collect();
 
-    let block_arg_maps: Vec<Vec<String>> = interfaces.iter().map(|i| i.inputs.clone()).collect();
+    let num_blocks = blocks.len();
+    let mut block_arg_maps: Vec<Vec<String>> = Vec::with_capacity(num_blocks);
+
+    for block_idx in 0..num_blocks {
+        let mut args: Vec<String> = if block_idx < interfaces.len() {
+            interfaces[block_idx].inputs.clone()
+        } else {
+            Vec::new()
+        };
+        // Append literal values for this block.
+        for lit_vals in &literal_param_values {
+            if block_idx < lit_vals.len() {
+                args.push(lit_vals[block_idx].clone());
+            }
+        }
+        block_arg_maps.push(args);
+    }
+
     let block_return_maps: Vec<Vec<String>> =
         interfaces.iter().map(|i| i.outputs.clone()).collect();
 
@@ -263,10 +321,17 @@ mod tests {
         let after_a = parse_stmts("print(c)");
         let after_b = parse_stmts("print(z)");
 
-        let sig = unify_signatures(&[
-            (block_a.as_slice(), after_a.as_slice()),
-            (block_b.as_slice(), after_b.as_slice()),
-        ]);
+        let src_a = "c = a + b";
+        let src_b = "z = x + y";
+        let divs = crate::diff_extract::extract_divergences(&block_a, &block_b, src_a, src_b);
+
+        let sig = unify_signatures(
+            &[
+                (block_a.as_slice(), after_a.as_slice()),
+                (block_b.as_slice(), after_b.as_slice()),
+            ],
+            &[divs],
+        );
 
         assert_eq!(sig.params, vec!["arg_0", "arg_1"]);
         assert_eq!(sig.returns, vec!["ret_0"]);
