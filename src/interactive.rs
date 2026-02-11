@@ -276,6 +276,15 @@ fn add_returns(
         }
     }
 
+    // Rename newly added returns.
+    let new_returns = &mut sig.returns[ret_count..];
+    let new_maps: Vec<Vec<String>> = sig
+        .block_return_maps
+        .iter()
+        .map(|m| m[ret_count..].to_vec())
+        .collect();
+    rename_collection(new_returns, &new_maps, "Rename added returns", "return value")?;
+
     Ok(())
 }
 
