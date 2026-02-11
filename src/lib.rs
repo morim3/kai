@@ -21,14 +21,12 @@ pub(crate) mod test_utils {
     }
 
     /// Build a `FunctionSignature` from string slices (test convenience).
-    /// All `return_param_links` default to `None`.
     pub fn make_sig(
         params: &[&str],
         returns: &[&str],
         arg_maps: &[&[&str]],
         ret_maps: &[&[&str]],
     ) -> FunctionSignature {
-        let return_count = returns.len();
         FunctionSignature {
             params: params.iter().map(|s| s.to_string()).collect(),
             returns: returns.iter().map(|s| s.to_string()).collect(),
@@ -40,7 +38,6 @@ pub(crate) mod test_utils {
                 .iter()
                 .map(|m| m.iter().map(|s| s.to_string()).collect())
                 .collect(),
-            return_param_links: vec![None; return_count],
         }
     }
 }

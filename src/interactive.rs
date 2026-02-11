@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{Result, bail};
 use dialoguer::{Confirm, Input, MultiSelect};
 
@@ -52,6 +54,73 @@ pub fn validate_ident(name: &str) -> Option<String> {
 pub fn validate_output(source: &str) -> Result<()> {
     ruff_python_parser::parse_module(source)
         .map_err(|e| anyhow::anyhow!("Generated code has syntax error: {e}"))?;
+    Ok(())
+}
+
+/// Validate the rename map built from `sig` is well-defined and injective.
+///
+/// Checks two invariants:
+/// 1. No original name maps to two different new names (HashMap conflict).
+/// 2. No two different original names map to the same new name (variable merge).
+pub fn validate_rename_map(sig: &FunctionSignature) -> Result<()> {
+    let mut map: HashMap<&str, &str> = HashMap::new();
+
+    // Params: original variable name → param name.
+    if let Some(arg_map) = sig.block_arg_maps.first() {
+        for (i, original) in arg_map.iter().enumerate() {
+            if !is_valid_python_ident(original) {
+                continue; // literal value, not a variable rename
+            }
+            map.insert(original, &sig.params[i]);
+        }
+    }
+
+    // Returns: original variable name → return name.
+    if let Some(ret_map) = sig.block_return_maps.first() {
+        for (i, original) in ret_map.iter().enumerate() {
+            if let Some(&existing) = map.get(original.as_str())
+                && existing != sig.returns[i] {
+                    bail!(
+                        "Variable '{}' maps to both '{}' (parameter) and '{}' (return) \
+                         — they must have the same name because the variable is both \
+                         read and written in the block",
+                        original,
+                        existing,
+                        sig.returns[i]
+                    );
+                }
+            map.insert(original, &sig.returns[i]);
+        }
+    }
+
+    // Check injectivity: different originals → different new names.
+    let mut reverse: HashMap<&str, &str> = HashMap::new();
+    for (&original, &new_name) in &map {
+        if let Some(&other_original) = reverse.get(new_name)
+            && other_original != original {
+                bail!(
+                    "Variables '{}' and '{}' both renamed to '{}' \
+                     — this would merge two different variables into one",
+                    other_original,
+                    original,
+                    new_name
+                );
+            }
+        reverse.insert(new_name, original);
+    }
+
+    // Check duplicate returns (e.g. `return a, a`).
+    for (i, ret_a) in sig.returns.iter().enumerate() {
+        for ret_b in sig.returns.iter().skip(i + 1) {
+            if ret_a == ret_b {
+                bail!(
+                    "Duplicate return name '{}' — each return value must have a unique name",
+                    ret_a
+                );
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -130,14 +199,10 @@ fn get_function_name(default: &str) -> Result<String> {
 }
 
 /// Generic rename loop: display per-block values, then prompt the user to rename
-/// each item with validation and duplicate checking.
-///
-/// `reserved` contains names from other collections (e.g. params when renaming
-/// returns) that must not be reused, preventing cross-collection collisions.
+/// each item with validation and within-collection duplicate checking.
 fn rename_collection(
     names: &mut [String],
     per_block_maps: &[Vec<String>],
-    reserved: &[String],
     header: &str,
     label: &str,
 ) -> Result<()> {
@@ -167,14 +232,11 @@ fn rename_collection(
                 continue;
             }
 
-            // Check duplicates within this collection.
-            let dup_self = names
+            let dup = names
                 .iter()
                 .enumerate()
                 .any(|(j, n)| j != i && n == &new_name);
-            // Check collisions with reserved names from other collections.
-            let dup_reserved = reserved.iter().any(|r| r == &new_name);
-            if dup_self || dup_reserved {
+            if dup {
                 eprintln!("  Invalid: '{new_name}' is already used by another {label}");
                 continue;
             }
@@ -190,65 +252,35 @@ fn rename_collection(
 
 /// Step 3: Rename parameters with validation.
 ///
-/// After renaming, linked returns (output=input) are auto-synced.
+/// After renaming, returns that were auto-linked to a param (output=input,
+/// named `arg_N`) are synced to the new param name.
 fn rename_parameters(sig: &mut FunctionSignature) -> Result<()> {
     rename_collection(
         &mut sig.params,
         &sig.block_arg_maps,
-        &[],
         "Parameters (per-block values)",
         "parameter",
     )?;
 
-    // Auto-sync: when a return was linked to a param (output=input),
-    // keep the return name in sync with the renamed param.
-    for (ret_idx, link) in sig.return_param_links.iter().enumerate() {
-        if let Some(param_idx) = link {
-            sig.returns[ret_idx] = sig.params[*param_idx].clone();
-        }
+    // Auto-sync: when unify_signatures set a return to "arg_N" (output=input),
+    // update it to match the (possibly renamed) param.
+    for ret in &mut sig.returns {
+        if let Some(idx) = ret.strip_prefix("arg_").and_then(|n| n.parse::<usize>().ok())
+            && idx < sig.params.len() {
+                *ret = sig.params[idx].clone();
+            }
     }
     Ok(())
 }
 
 /// Step 4: Rename return values with validation.
-///
-/// Returns that are linked to params are skipped (already synced by rename_parameters).
 fn rename_returns(sig: &mut FunctionSignature) -> Result<()> {
-    if sig.returns.is_empty() {
-        return Ok(());
-    }
-
-    // Collect indices of independent (non-linked) returns.
-    let independent: Vec<usize> = (0..sig.returns.len())
-        .filter(|i| sig.return_param_links.get(*i).copied().flatten().is_none())
-        .collect();
-
-    if independent.is_empty() {
-        return Ok(());
-    }
-
-    // Build sub-slices for display.
-    let names: Vec<String> = independent.iter().map(|&i| sig.returns[i].clone()).collect();
-    let per_block_maps: Vec<Vec<String>> = sig
-        .block_return_maps
-        .iter()
-        .map(|m| independent.iter().map(|&i| m[i].clone()).collect())
-        .collect();
-
-    let mut temp_names = names;
     rename_collection(
-        &mut temp_names,
-        &per_block_maps,
-        &[],
+        &mut sig.returns,
+        &sig.block_return_maps,
         "Returns (per-block names)",
         "return value",
-    )?;
-
-    // Write back.
-    for (j, &orig_idx) in independent.iter().enumerate() {
-        sig.returns[orig_idx] = temp_names[j].clone();
-    }
-    Ok(())
+    )
 }
 
 /// Step 5: Offer additional return value candidates from block stores.
@@ -315,7 +347,6 @@ fn add_returns(
         let store_idx = candidate_indices[sel];
         let ret_name = format!("ret_{}", ret_count + sel_idx);
         sig.returns.push(ret_name);
-        sig.return_param_links.push(None);
 
         for (block_idx, ret_map) in sig.block_return_maps.iter_mut().enumerate() {
             let var_name = block_stores
@@ -327,48 +358,24 @@ fn add_returns(
         }
     }
 
-    // Rename newly added returns (reserved = existing returns only).
-    let reserved: Vec<String> = sig.returns[..ret_count].to_vec();
+    // Rename newly added returns.
     let new_returns = &mut sig.returns[ret_count..];
     let new_maps: Vec<Vec<String>> = sig
         .block_return_maps
         .iter()
         .map(|m| m[ret_count..].to_vec())
         .collect();
-    rename_collection(new_returns, &new_maps, &reserved, "Rename added returns", "return value")?;
+    rename_collection(new_returns, &new_maps, "Rename added returns", "return value")?;
 
     Ok(())
-}
-
-// ── Signature mutation utilities (public for testing) ────────────────
-
-/// Remove parameters at indices NOT in `kept` from the signature.
-pub fn remove_params(sig: &mut FunctionSignature, kept: &[usize]) {
-    sig.params = kept.iter().map(|&i| sig.params[i].clone()).collect();
-    for arg_map in &mut sig.block_arg_maps {
-        *arg_map = kept
-            .iter()
-            .filter_map(|&i| arg_map.get(i).cloned())
-            .collect();
-    }
-}
-
-/// Remove return values at indices NOT in `kept` from the signature.
-pub fn remove_returns(sig: &mut FunctionSignature, kept: &[usize]) {
-    sig.returns = kept.iter().map(|&i| sig.returns[i].clone()).collect();
-    for ret_map in &mut sig.block_return_maps {
-        *ret_map = kept
-            .iter()
-            .filter_map(|&i| ret_map.get(i).cloned())
-            .collect();
-    }
 }
 
 // ── Main entry point ─────────────────────────────────────────────────
 
 /// Run the interactive extraction workflow.
 ///
-/// Flow: block selection → function name → param rename → return rename → preview.
+/// Flow: block selection → function name → param rename → return rename
+///       → add returns → final validation → preview.
 pub fn run_interactive(
     source: &str,
     start_line: usize,
@@ -408,6 +415,9 @@ pub fn run_interactive(
     // Step 5: Add additional return values.
     add_returns(&mut sig, &plan.block_stores)?;
 
+    // Final validation: check rename map consistency before generating code.
+    validate_rename_map(&sig)?;
+
     // Stage 3: Apply refactoring.
     let result = rewrite::apply_refactoring(
         source,
@@ -421,7 +431,7 @@ pub fn run_interactive(
     // Final safety check: ensure generated code is valid Python.
     validate_output(&result)?;
 
-    // Step 5: Preview and confirm.
+    // Preview and confirm.
     if show_diff {
         let filename = file_path.unwrap_or("<stdin>");
         let diff = rewrite::unified_diff(source, &result, filename);
@@ -463,15 +473,10 @@ mod tests {
 
     #[test]
     fn invalid_idents() {
-        // Empty
         assert!(!is_valid_python_ident(""));
-        // Starts with digit
         assert!(!is_valid_python_ident("123x"));
-        // Contains hyphen
         assert!(!is_valid_python_ident("my-var"));
-        // Contains space
         assert!(!is_valid_python_ident("my var"));
-        // Python keyword
         assert!(!is_valid_python_ident("if"));
         assert!(!is_valid_python_ident("return"));
         assert!(!is_valid_python_ident("class"));
@@ -495,63 +500,89 @@ mod tests {
         assert!(validate_output("def (broken\n").is_err());
     }
 
-    // ── remove_params / remove_returns tests ──
+    // ── validate_rename_map tests ──
 
     #[test]
-    fn remove_params_keeps_selected() {
-        let mut sig = make_sig(
-            &["arg_0", "arg_1", "arg_2"],
-            &["ret_0"],
-            &[&["a", "1", "x"], &["b", "10", "y"]],
-            &[&["c"], &["z"]],
+    fn rename_map_ok_for_independent_params_and_returns() {
+        let sig = make_sig(
+            &["x", "y"],
+            &["result"],
+            &[&["a", "b"], &["c", "d"]],
+            &[&["r"], &["s"]],
         );
-        remove_params(&mut sig, &[0, 2]);
-        assert_eq!(sig.params, vec!["arg_0", "arg_2"]);
-        assert_eq!(sig.block_arg_maps[0], vec!["a", "x"]);
-        assert_eq!(sig.block_arg_maps[1], vec!["b", "y"]);
+        assert!(validate_rename_map(&sig).is_ok());
     }
 
     #[test]
-    fn remove_params_all_kept() {
-        let mut sig = make_sig(&["arg_0", "arg_1"], &[], &[&["a", "1"]], &[&[]]);
-        remove_params(&mut sig, &[0, 1]);
-        assert_eq!(sig.params, vec!["arg_0", "arg_1"]);
-        assert_eq!(sig.block_arg_maps[0], vec!["a", "1"]);
-    }
-
-    #[test]
-    fn remove_params_empty() {
-        let mut sig = make_sig(&[], &[], &[&[]], &[&[]]);
-        remove_params(&mut sig, &[]);
-        assert!(sig.params.is_empty());
-    }
-
-    #[test]
-    fn remove_returns_keeps_selected() {
-        let mut sig = make_sig(
-            &["arg_0"],
-            &["ret_0", "ret_1"],
+    fn rename_map_ok_when_output_equals_input_same_name() {
+        // a → x for both param and return: consistent mapping.
+        let sig = make_sig(
+            &["x"],
+            &["x"],
             &[&["a"], &["b"]],
-            &[&["c", "d"], &["z", "w"]],
+            &[&["a"], &["b"]],
         );
-        remove_returns(&mut sig, &[1]);
-        assert_eq!(sig.returns, vec!["ret_1"]);
-        assert_eq!(sig.block_return_maps[0], vec!["d"]);
-        assert_eq!(sig.block_return_maps[1], vec!["w"]);
+        assert!(validate_rename_map(&sig).is_ok());
     }
 
     #[test]
-    fn remove_returns_all_removed() {
-        let mut sig = make_sig(
-            &["arg_0"],
-            &["ret_0"],
+    fn rename_map_rejects_conflicting_param_return() {
+        // a → x (param) but a → y (return): conflict.
+        let sig = make_sig(
+            &["x"],
+            &["y"],
             &[&["a"], &["b"]],
-            &[&["c"], &["z"]],
+            &[&["a"], &["b"]],
         );
-        remove_returns(&mut sig, &[]);
-        assert!(sig.returns.is_empty());
-        assert!(sig.block_return_maps[0].is_empty());
-        assert!(sig.block_return_maps[1].is_empty());
+        let err = validate_rename_map(&sig).unwrap_err();
+        assert!(err.to_string().contains("maps to both"), "{err}");
+    }
+
+    #[test]
+    fn rename_map_rejects_variable_merge() {
+        // a → z and b → z: two originals merge into one.
+        let sig = make_sig(
+            &["z"],
+            &["z"],
+            &[&["a"], &["c"]],
+            &[&["b"], &["d"]],
+        );
+        let err = validate_rename_map(&sig).unwrap_err();
+        assert!(err.to_string().contains("merge"), "{err}");
+    }
+
+    #[test]
+    fn rename_map_rejects_duplicate_returns() {
+        // Different originals (r1, r2) mapped to same return name "a" → merge error.
+        let sig = make_sig(
+            &["x"],
+            &["a", "a"],
+            &[&["v"], &["w"]],
+            &[&["r1", "r2"], &["s1", "s2"]],
+        );
+        assert!(validate_rename_map(&sig).is_err());
+
+        // Same original mapped to same return name (self-duplicate) → duplicate error.
+        let sig = make_sig(
+            &["x"],
+            &["a", "a"],
+            &[&["v"], &["w"]],
+            &[&["r1", "r1"], &["s1", "s1"]],
+        );
+        let err = validate_rename_map(&sig).unwrap_err();
+        assert!(err.to_string().contains("Duplicate return"), "{err}");
+    }
+
+    #[test]
+    fn rename_map_skips_literals() {
+        // Literal "1" in arg_map should not be treated as a variable rename.
+        let sig = make_sig(
+            &["x", "lit"],
+            &[],
+            &[&["a", "1"], &["b", "10"]],
+            &[&[], &[]],
+        );
+        assert!(validate_rename_map(&sig).is_ok());
     }
 
     // ── Simulated pipeline tests ──
@@ -627,6 +658,7 @@ d = c + 20
         sig.params[0] = "value".to_string();
         sig.params[1] = "offset".to_string();
 
+        assert!(validate_rename_map(&sig).is_ok());
         let result = rewrite::apply_refactoring(
             source,
             &blocks,
@@ -657,6 +689,7 @@ print(d)
             sig.returns[0] = "output".to_string();
         }
 
+        assert!(validate_rename_map(&sig).is_ok());
         let result = rewrite::apply_refactoring(
             source,
             &blocks,
@@ -671,7 +704,6 @@ print(d)
         assert!(validate_output(&result).is_ok());
     }
 
-    /// Verify generated output is always valid Python even with custom names.
     #[test]
     fn generated_output_always_valid_python() {
         let source = "\
@@ -702,6 +734,7 @@ print(d)
         if !sig.returns.is_empty() {
             sig.returns[0] = "result".to_string();
         }
+        assert!(validate_rename_map(&sig).is_ok());
         let result = rewrite::apply_refactoring(
             source,
             &blocks,
@@ -715,12 +748,8 @@ print(d)
 
     // ── add_returns logic tests (unit-level, no TTY) ──
 
-    /// Verify that add_returns correctly modifies the signature when called
-    /// with pre-computed selections (simulating the MultiSelect result).
     #[test]
     fn add_returns_logic_adds_store_variables() {
-        // Simulate: 2 blocks, each stores a, b.  Returns already has "b".
-        // Candidate should be "a" only.  We simulate adding it.
         let mut sig = make_sig(
             &["arg_0"],
             &["ret_0"],
@@ -732,7 +761,6 @@ print(d)
             vec!["c".to_string(), "d".to_string()],
         ];
 
-        // Manually invoke the logic that add_returns would do (skipping MultiSelect).
         let existing: std::collections::HashSet<&str> = sig
             .block_return_maps[0]
             .iter()
@@ -746,13 +774,10 @@ print(d)
             .map(|(i, _)| i)
             .collect();
 
-        // "a" at index 0 is the only candidate (b is already a return).
         assert_eq!(candidate_indices, vec![0]);
 
-        // Simulate user selecting the candidate.
-        let selections = vec![0usize]; // index into candidate_indices
         let ret_count = sig.returns.len();
-        for (sel_idx, &sel) in selections.iter().enumerate() {
+        for (sel_idx, &sel) in [0usize].iter().enumerate() {
             let store_idx = candidate_indices[sel];
             let ret_name = format!("ret_{}", ret_count + sel_idx);
             sig.returns.push(ret_name);
@@ -779,29 +804,20 @@ print(d)
             &[&["x"], &["y"]],
             &[&["a"], &["b"]],
         );
-        let block_stores = vec![
-            vec!["a".to_string()],
-            vec!["b".to_string()],
-        ];
+        let block_stores = vec![vec!["a".to_string()], vec!["b".to_string()]];
 
-        let existing: std::collections::HashSet<&str> = sig
-            .block_return_maps[0]
+        let existing: std::collections::HashSet<&str> = sig.block_return_maps[0]
             .iter()
             .map(|s| s.as_str())
             .collect();
-        let ref_stores = &block_stores[0];
-        let candidate_indices: Vec<usize> = ref_stores
+        let candidates: Vec<_> = block_stores[0]
             .iter()
-            .enumerate()
-            .filter(|(_, name)| !existing.contains(name.as_str()))
-            .map(|(i, _)| i)
+            .filter(|name| !existing.contains(name.as_str()))
             .collect();
 
-        assert!(candidate_indices.is_empty(), "no candidates when all stores are already returns");
+        assert!(candidates.is_empty());
     }
 
-    /// End-to-end: plan_extraction provides block_stores, then simulated add_returns
-    /// produces valid Python.
     #[test]
     fn simulated_add_returns_produces_valid_python() {
         let source = "\
@@ -816,11 +832,9 @@ print(d)
         let plan = crate::plan_extraction(source, &blocks, 1, 2).unwrap();
         let mut sig = plan.sig.clone();
 
-        // block_stores should contain the variables stored in each block.
         assert!(!plan.block_stores.is_empty());
         assert!(!plan.block_stores[0].is_empty());
 
-        // Find candidates and add the first one that isn't already returned.
         let existing: std::collections::HashSet<&str> = sig
             .block_return_maps
             .first()
@@ -835,12 +849,12 @@ print(d)
             .collect();
 
         if !candidate_indices.is_empty() {
-            // Add first candidate.
             let store_idx = candidate_indices[0];
             let ret_name = format!("ret_{}", sig.returns.len());
             sig.returns.push(ret_name);
             for (block_idx, ret_map) in sig.block_return_maps.iter_mut().enumerate() {
-                let var_name = plan.block_stores
+                let var_name = plan
+                    .block_stores
                     .get(block_idx)
                     .and_then(|s| s.get(store_idx))
                     .cloned()
@@ -849,6 +863,7 @@ print(d)
             }
         }
 
+        assert!(validate_rename_map(&sig).is_ok());
         let result = rewrite::apply_refactoring(
             source,
             &blocks,
@@ -860,13 +875,12 @@ print(d)
         assert!(validate_output(&result).is_ok(), "added return must produce valid Python");
     }
 
-    // ── return_param_links tests ──
+    // ── auto-sync test ──
 
-    /// When output=input (e.g. `a += 1`), renaming the param must auto-sync
-    /// the linked return, preventing rename map conflicts in rewrite.
+    /// When output=input (e.g. `a += 1`), rename_parameters auto-syncs the
+    /// return (which was set to `arg_N` by unify_signatures).
     #[test]
-    fn linked_return_syncs_with_param_rename() {
-        // a += 1: a is both input and output
+    fn auto_sync_linked_return_on_param_rename() {
         let source = "\
 a += 1
 print(a)
@@ -877,19 +891,21 @@ print(b)
         let plan = crate::plan_extraction(source, &blocks, 1, 1).unwrap();
         let mut sig = plan.sig.clone();
 
-        // Verify the link was established by unify_signatures.
-        assert_eq!(sig.return_param_links[0], Some(0));
-        assert_eq!(sig.returns[0], "arg_0");
+        assert_eq!(sig.returns[0], "arg_0", "unify_signatures links output=input");
 
-        // Simulate: user renames param from arg_0 → x.
+        // Simulate param rename: arg_0 → x.
         sig.params[0] = "x".to_string();
-        // Auto-sync linked returns (what rename_parameters does).
-        for (ret_idx, link) in sig.return_param_links.iter().enumerate() {
-            if let Some(param_idx) = link {
-                sig.returns[ret_idx] = sig.params[*param_idx].clone();
+        // Apply the same auto-sync logic as rename_parameters.
+        for ret in &mut sig.returns {
+            if let Some(idx) = ret.strip_prefix("arg_").and_then(|n| n.parse::<usize>().ok()) {
+                if idx < sig.params.len() {
+                    *ret = sig.params[idx].clone();
+                }
             }
         }
-        assert_eq!(sig.returns[0], "x", "linked return must follow param");
+
+        assert_eq!(sig.returns[0], "x", "return must follow param rename");
+        assert!(validate_rename_map(&sig).is_ok());
 
         let result = rewrite::apply_refactoring(
             source,
@@ -901,29 +917,8 @@ print(b)
         );
         assert!(result.contains("def inc(x):"));
         assert!(result.contains("return x"));
-        assert!(!result.contains("arg_0"), "no stale arg_0 in output");
+        assert!(!result.contains("arg_0"));
         assert!(validate_output(&result).is_ok());
-    }
-
-    /// Non-linked returns (output ≠ input) get None link and are independently renameable.
-    #[test]
-    fn non_linked_return_is_independent() {
-        let source = "\
-a = 1
-b = a + 2
-print(b)
-c = 10
-d = c + 20
-print(d)
-";
-        let blocks = scan::find_matches(source, 1, 2).unwrap();
-        let plan = crate::plan_extraction(source, &blocks, 1, 2).unwrap();
-        let sig = &plan.sig;
-
-        // b/d are outputs but not inputs — should be None link.
-        for link in &sig.return_param_links {
-            assert_eq!(*link, None, "output ≠ input should have no link");
-        }
     }
 
     #[test]

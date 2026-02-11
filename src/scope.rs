@@ -76,9 +76,6 @@ pub struct FunctionSignature {
     pub block_arg_maps: Vec<Vec<String>>,
     /// For each matched block: the mapping from return name -> original variable name.
     pub block_return_maps: Vec<Vec<String>>,
-    /// For each return: if it refers to the same variable as a parameter,
-    /// `Some(param_index)`.  When the param is renamed the return must follow.
-    pub return_param_links: Vec<Option<usize>>,
 }
 
 /// Collect literal divergences across all blocks into a table of per-parameter values.
@@ -152,16 +149,13 @@ pub fn unify_signatures(
     // conflicts in generate_function_def().
     let ref_iface = &interfaces[0];
     let mut ret_counter = 0;
-    let mut return_param_links: Vec<Option<usize>> = Vec::new();
     let returns: Vec<String> = ref_iface
         .outputs
         .iter()
         .map(|out_var| {
             if let Some(input_idx) = ref_iface.inputs.iter().position(|inp| inp == out_var) {
-                return_param_links.push(Some(input_idx));
                 format!("arg_{input_idx}")
             } else {
-                return_param_links.push(None);
                 let name = format!("ret_{ret_counter}");
                 ret_counter += 1;
                 name
@@ -195,7 +189,6 @@ pub fn unify_signatures(
         returns,
         block_arg_maps,
         block_return_maps,
-        return_param_links,
     }
 }
 
