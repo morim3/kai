@@ -16,7 +16,66 @@ fn parse_marker(content: &str) -> (usize, usize) {
     )
 }
 
-/// Run a success-case fixture: input.py + expected.py.
+/// Parse an optional `options.toml` file from a fixture directory.
+///
+/// Supports simple key-value format:
+///   func_name = "compute"
+///   param_names = ["a", "b"]
+///   select = [1, 3]
+fn parse_options(dir: &Path) -> pym::ExtractOptions {
+    let path = dir.join("options.toml");
+    let content = match fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return pym::ExtractOptions::default(),
+    };
+
+    let mut opts = pym::ExtractOptions::default();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        match key {
+            "func_name" => {
+                opts.func_name = Some(value.trim_matches('"').to_string());
+            }
+            "param_names" => {
+                opts.param_names = Some(parse_string_array(value));
+            }
+            "select" => {
+                opts.select = Some(parse_usize_array(value));
+            }
+            _ => {}
+        }
+    }
+    opts
+}
+
+/// Parse `["a", "b", "c"]` into `Vec<String>`.
+fn parse_string_array(s: &str) -> Vec<String> {
+    let inner = s.trim().trim_start_matches('[').trim_end_matches(']');
+    inner
+        .split(',')
+        .map(|p| p.trim().trim_matches('"').to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+/// Parse `[1, 3]` into `Vec<usize>`.
+fn parse_usize_array(s: &str) -> Vec<usize> {
+    let inner = s.trim().trim_start_matches('[').trim_end_matches(']');
+    inner
+        .split(',')
+        .map(|p| p.trim().parse::<usize>().expect("invalid integer in array"))
+        .collect()
+}
+
+/// Run a success-case fixture: input.py + expected.py (+ optional options.toml).
 /// Returns Ok(()) on match, Err(message) on mismatch.
 fn run_fixture(dir: &Path) -> Result<(), String> {
     let input = fs::read_to_string(dir.join("input.py"))
@@ -25,7 +84,8 @@ fn run_fixture(dir: &Path) -> Result<(), String> {
         .unwrap_or_else(|e| panic!("failed to read {}/expected.py: {e}", dir.display()));
 
     let (start, end) = parse_marker(&input);
-    let result = match pym::extract_method(&input, start, end) {
+    let options = parse_options(dir);
+    let result = match pym::extract_method_with_options(&input, start, end, &options) {
         Ok(r) => r,
         Err(e) => return Err(format!("pipeline failed: {e}")),
     };
