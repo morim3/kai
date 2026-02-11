@@ -5,16 +5,46 @@ use ruff_text_size::Ranged;
 
 use crate::normalize::{hash_stmt_refs, hash_stmts, line_of_offset, select_stmts};
 
+/// The kind of scope that contains matched blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeKind {
+    Module,
+    Function,
+    Class,
+}
+
+/// Context about the scope where the extracted function should be placed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeContext {
+    pub kind: ScopeKind,
+    /// Byte offset of the first statement in the scope body (insertion point).
+    pub body_start_offset: usize,
+    /// Indentation string for code inside this scope (e.g. "    " for function body).
+    pub indent: String,
+}
+
 /// Find the innermost scope body containing the given line range.
 ///
 /// Recursively drills into `FunctionDef`, `AsyncFunctionDef`, and `ClassDef`
 /// to find the deepest body that fully contains `target_start..=target_end`.
+///
+/// Returns the body slice and a `ScopeContext` describing the scope.
 pub fn find_innermost_body<'a>(
     body: &'a [Stmt],
     source: &str,
     target_start: usize,
     target_end: usize,
-) -> &'a [Stmt] {
+) -> (&'a [Stmt], ScopeContext) {
+    find_innermost_body_inner(body, source, target_start, target_end, ScopeKind::Module)
+}
+
+fn find_innermost_body_inner<'a>(
+    body: &'a [Stmt],
+    source: &str,
+    target_start: usize,
+    target_end: usize,
+    current_kind: ScopeKind,
+) -> (&'a [Stmt], ScopeContext) {
     for stmt in body {
         let range = stmt.range();
         let stmt_start = line_of_offset(source, range.start().to_usize());
@@ -23,16 +53,42 @@ pub fn find_innermost_body<'a>(
         if stmt_start <= target_start && stmt_end >= target_end {
             match stmt {
                 Stmt::FunctionDef(f) => {
-                    return find_innermost_body(&f.body, source, target_start, target_end);
+                    return find_innermost_body_inner(
+                        &f.body,
+                        source,
+                        target_start,
+                        target_end,
+                        ScopeKind::Function,
+                    );
                 }
                 Stmt::ClassDef(c) => {
-                    return find_innermost_body(&c.body, source, target_start, target_end);
+                    return find_innermost_body_inner(
+                        &c.body,
+                        source,
+                        target_start,
+                        target_end,
+                        ScopeKind::Class,
+                    );
                 }
                 _ => {}
             }
         }
     }
-    body
+
+    let (body_start_offset, indent) = if let Some(first) = body.first() {
+        let offset = first.range().start().to_usize();
+        let line_start = source[..offset].rfind('\n').map_or(0, |p| p + 1);
+        (offset, source[line_start..offset].to_string())
+    } else {
+        (0, String::new())
+    };
+
+    let ctx = ScopeContext {
+        kind: current_kind,
+        body_start_offset,
+        indent,
+    };
+    (body, ctx)
 }
 
 /// A matched block in the source file.
@@ -66,7 +122,7 @@ pub fn find_matches(
 
     let parsed = parse_module(source).map_err(|e| anyhow::anyhow!("Parse error: {e}"))?;
     let top_body = &parsed.syntax().body;
-    let body = find_innermost_body(top_body, source, target_start, target_end);
+    let (body, _ctx) = find_innermost_body(top_body, source, target_start, target_end);
 
     scan_body(source, body, target_start, target_end)
 }

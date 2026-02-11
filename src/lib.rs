@@ -53,7 +53,7 @@ pub fn extract_method_with_options(
     let parsed = ruff_python_parser::parse_module(source)
         .map_err(|e| anyhow::anyhow!("Parse error: {e}"))?;
     let top_body = &parsed.into_syntax().body;
-    let body = scan::find_innermost_body(top_body, source, start_line, end_line);
+    let (body, scope_ctx) = scan::find_innermost_body(top_body, source, start_line, end_line);
     let window_size = {
         let target_stmts = normalize::select_stmts(source, body, start_line, end_line);
         target_stmts.len()
@@ -86,5 +86,7 @@ pub fn extract_method_with_options(
 
     let sig = scope::unify_signatures(&sig_inputs, &all_divs);
     let func_name = options.func_name.as_deref().unwrap_or("extracted_func_0");
-    Ok(rewrite::apply_refactoring(source, &blocks, &sig, func_name))
+    Ok(rewrite::apply_refactoring(
+        source, &blocks, &sig, func_name, &scope_ctx,
+    ))
 }

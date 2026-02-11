@@ -1,17 +1,19 @@
 use similar::TextDiff;
 
-use crate::scan::MatchedBlock;
+use crate::scan::{MatchedBlock, ScopeContext, ScopeKind};
 use crate::scope::FunctionSignature;
 
 /// Generate the extracted function definition as a string.
 ///
 /// Uses the source text of the first matched block as the function body,
 /// with variable names replaced according to the signature mapping.
+/// The `scope` determines the base indentation of the generated function.
 pub fn generate_function_def(
     source: &str,
     reference_block: &MatchedBlock,
     sig: &FunctionSignature,
     func_name: &str,
+    scope: &ScopeContext,
 ) -> String {
     let body_text = &source[reference_block.start_offset..reference_block.end_offset];
 
@@ -37,17 +39,30 @@ pub fn generate_function_def(
         }
     }
 
-    // Re-indent the body to 4 spaces (function body indent).
-    let body = reindent(&body, &original_indent, "    ");
+    // Determine the function body indent (one level deeper than the def line).
+    let body_indent = format!("{}    ", &scope.indent);
 
-    // Build the function definition.
-    let params_str = sig.params.join(", ");
-    let mut func = format!("def {func_name}({params_str}):\n{body}\n");
+    // Re-indent the body to the correct level.
+    let body = reindent(&body, &original_indent, &body_indent);
+
+    // Build params: for class scope, prepend `self`.
+    let params_str = if scope.kind == ScopeKind::Class {
+        if sig.params.is_empty() {
+            "self".to_string()
+        } else {
+            format!("self, {}", sig.params.join(", "))
+        }
+    } else {
+        sig.params.join(", ")
+    };
+
+    let def_indent = &scope.indent;
+    let mut func = format!("{def_indent}def {func_name}({params_str}):\n{body}\n");
 
     // Add return statement if there are outputs.
     if !sig.returns.is_empty() {
         let return_expr = sig.returns.join(", ");
-        func.push_str(&format!("    return {return_expr}\n"));
+        func.push_str(&format!("{body_indent}return {return_expr}\n"));
     }
 
     func
@@ -56,10 +71,21 @@ pub fn generate_function_def(
 /// Generate the replacement call for a matched block.
 ///
 /// `block_index` selects which block's variable mapping to use.
-pub fn generate_call(sig: &FunctionSignature, block_index: usize, func_name: &str) -> String {
+/// For class scope, the call is prefixed with `self.`.
+pub fn generate_call(
+    sig: &FunctionSignature,
+    block_index: usize,
+    func_name: &str,
+    scope: &ScopeContext,
+) -> String {
     let args: &[String] = &sig.block_arg_maps[block_index];
     let args_str = args.join(", ");
-    let call = format!("{func_name}({args_str})");
+    let prefix = if scope.kind == ScopeKind::Class {
+        "self."
+    } else {
+        ""
+    };
+    let call = format!("{prefix}{func_name}({args_str})");
 
     if sig.returns.is_empty() {
         call
@@ -71,7 +97,7 @@ pub fn generate_call(sig: &FunctionSignature, block_index: usize, func_name: &st
 }
 
 /// Apply the refactoring: replace matched blocks with function calls,
-/// and prepend the function definition. Returns the new source text.
+/// and insert the function definition at the appropriate scope.
 ///
 /// The function definition is always generated from block 0 (the reference).
 pub fn apply_refactoring(
@@ -79,8 +105,9 @@ pub fn apply_refactoring(
     blocks: &[MatchedBlock],
     sig: &FunctionSignature,
     func_name: &str,
+    scope: &ScopeContext,
 ) -> String {
-    let func_def = generate_function_def(source, &blocks[0], sig, func_name);
+    let func_def = generate_function_def(source, &blocks[0], sig, func_name, scope);
 
     // Build edits sorted by offset (descending so we can apply from end to start).
     let mut edits: Vec<(usize, usize, String)> = blocks
@@ -88,7 +115,7 @@ pub fn apply_refactoring(
         .enumerate()
         .map(|(i, block)| {
             let indent = indent_at_offset(source, block.start_offset);
-            let call = generate_call(sig, i, func_name);
+            let call = generate_call(sig, i, func_name, scope);
             let replacement = format!("{indent}{call}\n");
             (block.start_offset, block.end_offset, replacement)
         })
@@ -105,8 +132,21 @@ pub fn apply_refactoring(
         result.replace_range(line_start..line_end, replacement);
     }
 
-    // Prepend the function definition.
-    format!("{func_def}\n{result}")
+    match scope.kind {
+        ScopeKind::Module => {
+            // Prepend the function definition at the top of the file.
+            format!("{func_def}\n{result}")
+        }
+        ScopeKind::Function | ScopeKind::Class => {
+            // Insert at the beginning of the scope body.
+            // Find the line start of body_start_offset for clean insertion.
+            let insert_offset = result[..scope.body_start_offset]
+                .rfind('\n')
+                .map_or(0, |p| p + 1);
+            result.insert_str(insert_offset, &format!("{func_def}\n"));
+            result
+        }
+    }
 }
 
 /// Generate a unified diff between original and new source.
@@ -206,10 +246,18 @@ mod tests {
         }
     }
 
+    fn module_scope() -> ScopeContext {
+        ScopeContext {
+            kind: ScopeKind::Module,
+            body_start_offset: 0,
+            indent: String::new(),
+        }
+    }
+
     #[test]
     fn generate_call_no_returns() {
         let sig = make_sig(&["arg_0", "arg_1"], &[], &[&["x", "y"]], &[&[]]);
-        let call = generate_call(&sig, 0, "extracted_func_0");
+        let call = generate_call(&sig, 0, "extracted_func_0", &module_scope());
         assert_eq!(call, "extracted_func_0(x, y)");
     }
 
@@ -222,11 +270,11 @@ mod tests {
             &[&["result"], &["output"]],
         );
         assert_eq!(
-            generate_call(&sig, 0, "extracted_func_0"),
+            generate_call(&sig, 0, "extracted_func_0", &module_scope()),
             "result = extracted_func_0(x)"
         );
         assert_eq!(
-            generate_call(&sig, 1, "extracted_func_0"),
+            generate_call(&sig, 1, "extracted_func_0", &module_scope()),
             "output = extracted_func_0(a)"
         );
     }
@@ -234,8 +282,20 @@ mod tests {
     #[test]
     fn generate_call_custom_name() {
         let sig = make_sig(&["x", "y"], &[], &[&["a", "b"]], &[&[]]);
-        let call = generate_call(&sig, 0, "compute");
+        let call = generate_call(&sig, 0, "compute", &module_scope());
         assert_eq!(call, "compute(a, b)");
+    }
+
+    #[test]
+    fn generate_call_class_scope() {
+        let sig = make_sig(&["arg_0"], &[], &[&["x"]], &[&[]]);
+        let class_scope = ScopeContext {
+            kind: ScopeKind::Class,
+            body_start_offset: 0,
+            indent: "    ".to_string(),
+        };
+        let call = generate_call(&sig, 0, "extracted_func_0", &class_scope);
+        assert_eq!(call, "self.extracted_func_0(x)");
     }
 
     #[test]
