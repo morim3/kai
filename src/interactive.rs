@@ -189,6 +189,8 @@ fn rename_collection(
 }
 
 /// Step 3: Rename parameters with validation.
+///
+/// After renaming, linked returns (output=input) are auto-synced.
 fn rename_parameters(sig: &mut FunctionSignature) -> Result<()> {
     rename_collection(
         &mut sig.params,
@@ -196,18 +198,57 @@ fn rename_parameters(sig: &mut FunctionSignature) -> Result<()> {
         &[],
         "Parameters (per-block values)",
         "parameter",
-    )
+    )?;
+
+    // Auto-sync: when a return was linked to a param (output=input),
+    // keep the return name in sync with the renamed param.
+    for (ret_idx, link) in sig.return_param_links.iter().enumerate() {
+        if let Some(param_idx) = link {
+            sig.returns[ret_idx] = sig.params[*param_idx].clone();
+        }
+    }
+    Ok(())
 }
 
 /// Step 4: Rename return values with validation.
+///
+/// Returns that are linked to params are skipped (already synced by rename_parameters).
 fn rename_returns(sig: &mut FunctionSignature) -> Result<()> {
+    if sig.returns.is_empty() {
+        return Ok(());
+    }
+
+    // Collect indices of independent (non-linked) returns.
+    let independent: Vec<usize> = (0..sig.returns.len())
+        .filter(|i| sig.return_param_links.get(*i).copied().flatten().is_none())
+        .collect();
+
+    if independent.is_empty() {
+        return Ok(());
+    }
+
+    // Build sub-slices for display.
+    let names: Vec<String> = independent.iter().map(|&i| sig.returns[i].clone()).collect();
+    let per_block_maps: Vec<Vec<String>> = sig
+        .block_return_maps
+        .iter()
+        .map(|m| independent.iter().map(|&i| m[i].clone()).collect())
+        .collect();
+
+    let mut temp_names = names;
     rename_collection(
-        &mut sig.returns,
-        &sig.block_return_maps,
+        &mut temp_names,
+        &per_block_maps,
         &[],
         "Returns (per-block names)",
         "return value",
-    )
+    )?;
+
+    // Write back.
+    for (j, &orig_idx) in independent.iter().enumerate() {
+        sig.returns[orig_idx] = temp_names[j].clone();
+    }
+    Ok(())
 }
 
 /// Step 5: Offer additional return value candidates from block stores.
@@ -274,6 +315,7 @@ fn add_returns(
         let store_idx = candidate_indices[sel];
         let ret_name = format!("ret_{}", ret_count + sel_idx);
         sig.returns.push(ret_name);
+        sig.return_param_links.push(None);
 
         for (block_idx, ret_map) in sig.block_return_maps.iter_mut().enumerate() {
             let var_name = block_stores
@@ -816,6 +858,72 @@ print(d)
             &plan.scope_ctx,
         );
         assert!(validate_output(&result).is_ok(), "added return must produce valid Python");
+    }
+
+    // ── return_param_links tests ──
+
+    /// When output=input (e.g. `a += 1`), renaming the param must auto-sync
+    /// the linked return, preventing rename map conflicts in rewrite.
+    #[test]
+    fn linked_return_syncs_with_param_rename() {
+        // a += 1: a is both input and output
+        let source = "\
+a += 1
+print(a)
+b += 1
+print(b)
+";
+        let blocks = scan::find_matches(source, 1, 1).unwrap();
+        let plan = crate::plan_extraction(source, &blocks, 1, 1).unwrap();
+        let mut sig = plan.sig.clone();
+
+        // Verify the link was established by unify_signatures.
+        assert_eq!(sig.return_param_links[0], Some(0));
+        assert_eq!(sig.returns[0], "arg_0");
+
+        // Simulate: user renames param from arg_0 → x.
+        sig.params[0] = "x".to_string();
+        // Auto-sync linked returns (what rename_parameters does).
+        for (ret_idx, link) in sig.return_param_links.iter().enumerate() {
+            if let Some(param_idx) = link {
+                sig.returns[ret_idx] = sig.params[*param_idx].clone();
+            }
+        }
+        assert_eq!(sig.returns[0], "x", "linked return must follow param");
+
+        let result = rewrite::apply_refactoring(
+            source,
+            &blocks,
+            &plan.ref_node_positions,
+            &sig,
+            "inc",
+            &plan.scope_ctx,
+        );
+        assert!(result.contains("def inc(x):"));
+        assert!(result.contains("return x"));
+        assert!(!result.contains("arg_0"), "no stale arg_0 in output");
+        assert!(validate_output(&result).is_ok());
+    }
+
+    /// Non-linked returns (output ≠ input) get None link and are independently renameable.
+    #[test]
+    fn non_linked_return_is_independent() {
+        let source = "\
+a = 1
+b = a + 2
+print(b)
+c = 10
+d = c + 20
+print(d)
+";
+        let blocks = scan::find_matches(source, 1, 2).unwrap();
+        let plan = crate::plan_extraction(source, &blocks, 1, 2).unwrap();
+        let sig = &plan.sig;
+
+        // b/d are outputs but not inputs — should be None link.
+        for link in &sig.return_param_links {
+            assert_eq!(*link, None, "output ≠ input should have no link");
+        }
     }
 
     #[test]
