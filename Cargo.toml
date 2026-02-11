@@ -1,0 +1,14 @@
+[package]
+name = "pym"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ruff_python_parser = { git = "https://github.com/astral-sh/ruff", tag = "0.15.0" }
+ruff_python_ast = { git = "https://github.com/astral-sh/ruff", tag = "0.15.0" }
+ruff_text_size = { git = "https://github.com/astral-sh/ruff", tag = "0.15.0" }
+rustc-hash = "2"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+thiserror = "2"
+similar = "2"

@@ -5,6 +5,6 @@ while true; do
     LOGFILE="agent_logs/agent_${COMMIT}.log"
 
     claude --dangerously-skip-permissions \
-           -p "$(cat AGENT_PROMPT.md)" \
-           --model claude-opus-X-Y &> "$LOGFILE"
+           -p "$(cat CLAUDE.md)" \
+           --model claude-opus-4-6 2>&1 | tee "$LOGFILE"
 done

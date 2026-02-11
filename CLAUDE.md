@@ -7,7 +7,7 @@ You are operating autonomously. To maintain progress across long sessions, you m
 ## 1. 🗺️ Self-Orientation & State Management
 You have time-blindness and context-amnesia. To prevent getting lost or stuck in infinite loops, you must maintain your own state.
 
-* **Maintain `PROGRESS.md`:** At the start of every session, read `PROGRESS.md`. Before finishing a task or ending a response, UPDATE `PROGRESS.md` with:
+* **Maintain `PROGRESS.md`:** At the start of every session, read latest "current_tasks/`PROGRESS_{commit_id}.md". Before finishing a task or ending a response, UPDATE `PROGRESS_{commit_id}.md with:
     * Current goal (from the `design_doc.md`).
     * What was just completed.
     * Failed approaches (Crucial: log what *didn't* work so you don't repeat mistakes).
