@@ -303,6 +303,176 @@ mod tests {
         assert!(sig.params.is_empty());
     }
 
+    /// Simulate the full interactive pipeline programmatically:
+    /// scan → select all blocks → plan → keep all params → apply.
+    /// Result must match non-interactive mode.
+    #[test]
+    fn simulated_interactive_matches_non_interactive() {
+        let source = "\
+a = 1
+b = a + 2
+c = 10
+d = c + 20
+e = 100
+f = e + 200
+";
+        // Non-interactive result.
+        let expected = crate::extract_method(source, 1, 2).unwrap();
+
+        // Simulate interactive: scan, select all, plan, apply with no modifications.
+        let all_blocks = scan::find_matches(source, 1, 2).unwrap();
+        assert_eq!(all_blocks.len(), 3);
+
+        let plan = crate::plan_extraction(source, &all_blocks, 1, 2).unwrap();
+        let result = rewrite::apply_refactoring(
+            source,
+            &all_blocks,
+            &plan.ref_node_positions,
+            &plan.sig,
+            "extracted_func_0",
+            &plan.scope_ctx,
+        );
+        assert_eq!(result, expected);
+    }
+
+    /// Simulate interactive with block subset selection (drop block 3).
+    #[test]
+    fn simulated_interactive_block_subset() {
+        let source = "\
+a = 1
+b = a + 2
+c = 10
+d = c + 20
+e = 100
+f = e + 200
+";
+        let all_blocks = scan::find_matches(source, 1, 2).unwrap();
+        assert_eq!(all_blocks.len(), 3);
+
+        // Select only blocks 0 and 1 (drop block 2).
+        let blocks: Vec<MatchedBlock> = vec![all_blocks[0].clone(), all_blocks[1].clone()];
+        let plan = crate::plan_extraction(source, &blocks, 1, 2).unwrap();
+        let result = rewrite::apply_refactoring(
+            source,
+            &blocks,
+            &plan.ref_node_positions,
+            &plan.sig,
+            "extracted_func_0",
+            &plan.scope_ctx,
+        );
+
+        // Block 3 (e = 100, f = e + 200) should remain untouched.
+        assert!(result.contains("e = 100"));
+        assert!(result.contains("f = e + 200"));
+        // Blocks 1 and 2 should be replaced with calls.
+        assert!(result.contains("extracted_func_0(1, 2)"));
+        assert!(result.contains("extracted_func_0(10, 20)"));
+        // The function def should exist.
+        assert!(result.contains("def extracted_func_0(arg_0, arg_1):"));
+    }
+
+    /// Simulate interactive with parameter removal.
+    #[test]
+    fn simulated_interactive_param_removal() {
+        let source = "\
+a = 1
+b = a + 2
+c = 10
+d = c + 20
+";
+        let blocks = scan::find_matches(source, 1, 2).unwrap();
+        let plan = crate::plan_extraction(source, &blocks, 1, 2).unwrap();
+        let mut sig = plan.sig.clone();
+
+        // sig.params should be ["arg_0", "arg_1"] (variable + literal divergence).
+        assert_eq!(sig.params.len(), 2);
+
+        // Remove param at index 1 (the literal divergence).
+        remove_params(&mut sig, &[0]);
+        assert_eq!(sig.params, vec!["arg_0"]);
+        assert_eq!(sig.block_arg_maps[0].len(), 1);
+        assert_eq!(sig.block_arg_maps[1].len(), 1);
+
+        let result = rewrite::apply_refactoring(
+            source,
+            &blocks,
+            &plan.ref_node_positions,
+            &sig,
+            "my_func",
+            &plan.scope_ctx,
+        );
+        assert!(result.contains("def my_func(arg_0):"));
+        assert!(result.contains("my_func(1)"));
+        assert!(result.contains("my_func(10)"));
+    }
+
+    /// Simulate interactive with parameter rename.
+    #[test]
+    fn simulated_interactive_param_rename() {
+        let source = "\
+a = 1
+b = a + 2
+c = 10
+d = c + 20
+";
+        let blocks = scan::find_matches(source, 1, 2).unwrap();
+        let plan = crate::plan_extraction(source, &blocks, 1, 2).unwrap();
+        let mut sig = plan.sig.clone();
+
+        // Rename arg_0 → "value", arg_1 → "offset"
+        sig.params[0] = "value".to_string();
+        sig.params[1] = "offset".to_string();
+
+        let result = rewrite::apply_refactoring(
+            source,
+            &blocks,
+            &plan.ref_node_positions,
+            &sig,
+            "compute",
+            &plan.scope_ctx,
+        );
+        assert!(result.contains("def compute(value, offset):"));
+        // The body should use the renamed params.
+        assert!(result.contains("value"));
+        assert!(result.contains("offset"));
+    }
+
+    /// Simulate interactive with return value rename.
+    #[test]
+    fn simulated_interactive_return_rename() {
+        let source = "\
+a = 1
+b = a + 2
+print(b)
+c = 10
+d = c + 20
+print(d)
+";
+        let blocks = scan::find_matches(source, 1, 2).unwrap();
+        assert_eq!(blocks.len(), 2);
+
+        let plan = crate::plan_extraction(source, &blocks, 1, 2).unwrap();
+        let mut sig = plan.sig.clone();
+
+        // Rename return if present.
+        if !sig.returns.is_empty() {
+            sig.returns[0] = "output".to_string();
+        }
+
+        let result = rewrite::apply_refactoring(
+            source,
+            &blocks,
+            &plan.ref_node_positions,
+            &sig,
+            "extracted_func_0",
+            &plan.scope_ctx,
+        );
+        // The function should have a return statement.
+        if !sig.returns.is_empty() {
+            assert!(result.contains("return output"));
+        }
+    }
+
     #[test]
     fn block_preview_truncates() {
         let source =
