@@ -95,7 +95,8 @@ pub fn extract_method_with_options(
 
     let sig = scope::unify_signatures(&sig_inputs, &all_divs);
     let func_name = options.func_name.as_deref().unwrap_or("extracted_func_0");
+    let ref_stmts = sig_inputs[0].0;
     Ok(rewrite::apply_refactoring(
-        source, &blocks, &sig, func_name, &scope_ctx,
+        source, &blocks, ref_stmts, &sig, func_name, &scope_ctx,
     ))
 }
