@@ -18,8 +18,15 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let source = std::fs::read_to_string(&cli.file)?;
-    let hash = pym::normalize::hash_block(&source, cli.start_line, cli.end_line)?;
+    let matches = pym::scan::find_matches(&source, cli.start_line, cli.end_line)?;
 
-    println!("{hash:#018x}");
+    println!("Found {} matching block(s):", matches.len());
+    for m in &matches {
+        println!(
+            "  lines {}-{} (bytes {}..{})",
+            m.start_line, m.end_line, m.start_offset, m.end_offset
+        );
+    }
+
     Ok(())
 }

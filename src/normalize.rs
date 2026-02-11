@@ -9,6 +9,24 @@ use ruff_python_parser::parse_module;
 use ruff_text_size::Ranged;
 use rustc_hash::FxHasher;
 
+/// Compute the structural hash of a slice of AST statements.
+pub fn hash_stmts(stmts: &[Stmt]) -> u64 {
+    let mut visitor = NormalizeVisitor::new();
+    for stmt in stmts {
+        visitor.visit_stmt(stmt);
+    }
+    visitor.finish()
+}
+
+/// Compute the structural hash of a collection of statement references.
+pub fn hash_stmt_refs(stmts: &[&Stmt]) -> u64 {
+    let mut visitor = NormalizeVisitor::new();
+    for stmt in stmts {
+        visitor.visit_stmt(stmt);
+    }
+    visitor.finish()
+}
+
 /// Extract the statements covering `start_line..=end_line` (1-based) from source.
 /// Returns a hash of the structurally-normalized AST for those statements.
 pub fn hash_block(source: &str, start_line: usize, end_line: usize) -> Result<u64> {
@@ -23,15 +41,11 @@ pub fn hash_block(source: &str, start_line: usize, end_line: usize) -> Result<u6
         bail!("No statements found in range {start_line}..={end_line}");
     }
 
-    let mut visitor = NormalizeVisitor::new();
-    for stmt in stmts {
-        visitor.visit_stmt(stmt);
-    }
-    Ok(visitor.finish())
+    Ok(hash_stmt_refs(&stmts))
 }
 
 /// Select statements whose line range overlaps with the given 1-based line range.
-fn select_stmts<'a>(
+pub fn select_stmts<'a>(
     source: &str,
     body: &'a [Stmt],
     start_line: usize,
@@ -48,7 +62,7 @@ fn select_stmts<'a>(
 }
 
 /// Convert a byte offset to a 1-based line number.
-fn line_of_offset(source: &str, offset: usize) -> usize {
+pub fn line_of_offset(source: &str, offset: usize) -> usize {
     let offset = offset.min(source.len());
     source[..offset].chars().filter(|&c| c == '\n').count() + 1
 }
