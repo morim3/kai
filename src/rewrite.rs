@@ -194,15 +194,6 @@ mod tests {
         }
     }
 
-    fn make_block(start_line: usize, end_line: usize, start: usize, end: usize) -> MatchedBlock {
-        MatchedBlock {
-            start_line,
-            end_line,
-            start_offset: start,
-            end_offset: end,
-        }
-    }
-
     #[test]
     fn generate_call_no_returns() {
         let sig = make_sig(&["arg_0", "arg_1"], &[], &[&["x", "y"]], &[&[]]);
