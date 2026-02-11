@@ -131,9 +131,13 @@ fn get_function_name(default: &str) -> Result<String> {
 
 /// Generic rename loop: display per-block values, then prompt the user to rename
 /// each item with validation and duplicate checking.
+///
+/// `reserved` contains names from other collections (e.g. params when renaming
+/// returns) that must not be reused, preventing cross-collection collisions.
 fn rename_collection(
     names: &mut [String],
     per_block_maps: &[Vec<String>],
+    reserved: &[String],
     header: &str,
     label: &str,
 ) -> Result<()> {
@@ -163,11 +167,14 @@ fn rename_collection(
                 continue;
             }
 
-            let dup = names
+            // Check duplicates within this collection.
+            let dup_self = names
                 .iter()
                 .enumerate()
                 .any(|(j, n)| j != i && n == &new_name);
-            if dup {
+            // Check collisions with reserved names from other collections.
+            let dup_reserved = reserved.iter().any(|r| r == &new_name);
+            if dup_self || dup_reserved {
                 eprintln!("  Invalid: '{new_name}' is already used by another {label}");
                 continue;
             }
@@ -186,6 +193,7 @@ fn rename_parameters(sig: &mut FunctionSignature) -> Result<()> {
     rename_collection(
         &mut sig.params,
         &sig.block_arg_maps,
+        &sig.returns,
         "Parameters (per-block values)",
         "parameter",
     )
@@ -196,6 +204,7 @@ fn rename_returns(sig: &mut FunctionSignature) -> Result<()> {
     rename_collection(
         &mut sig.returns,
         &sig.block_return_maps,
+        &sig.params,
         "Returns (per-block names)",
         "return value",
     )
@@ -276,14 +285,18 @@ fn add_returns(
         }
     }
 
-    // Rename newly added returns.
+    // Rename newly added returns (reserved = existing params + existing returns).
+    let reserved: Vec<String> = sig.params.iter()
+        .chain(sig.returns[..ret_count].iter())
+        .cloned()
+        .collect();
     let new_returns = &mut sig.returns[ret_count..];
     let new_maps: Vec<Vec<String>> = sig
         .block_return_maps
         .iter()
         .map(|m| m[ret_count..].to_vec())
         .collect();
-    rename_collection(new_returns, &new_maps, "Rename added returns", "return value")?;
+    rename_collection(new_returns, &new_maps, &reserved, "Rename added returns", "return value")?;
 
     Ok(())
 }
