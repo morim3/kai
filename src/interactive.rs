@@ -125,23 +125,50 @@ fn rename_parameters(sig: &mut FunctionSignature, kept_indices: &[usize]) -> Res
     Ok(())
 }
 
-/// Step 5: Let the user rename return values.
-fn rename_returns(sig: &mut FunctionSignature) -> Result<()> {
+/// Step 5a: Let the user select which return values to keep.
+///
+/// Returns indices of selected returns.
+fn select_returns(sig: &FunctionSignature) -> Result<Vec<usize>> {
+    if sig.returns.is_empty() {
+        return Ok(vec![]);
+    }
+
+    eprintln!("\nReturns (per-block names):");
+    let items: Vec<String> = sig
+        .returns
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let values: Vec<&str> = sig
+                .block_return_maps
+                .iter()
+                .map(|m| m.get(i).map(|s| s.as_str()).unwrap_or("?"))
+                .collect();
+            format!("{name}: {}", values.join(" | "))
+        })
+        .collect();
+
+    for item in &items {
+        eprintln!("  [x] {item}");
+    }
+
+    let defaults: Vec<bool> = vec![true; sig.returns.len()];
+    let selections = MultiSelect::new()
+        .with_prompt("Select return values to keep [Space=toggle, Enter=confirm]")
+        .items(&items)
+        .defaults(&defaults)
+        .interact()?;
+
+    Ok(selections)
+}
+
+/// Step 5b: Let the user rename return values.
+fn rename_returns(sig: &mut FunctionSignature, kept_indices: &[usize]) -> Result<()> {
     if sig.returns.is_empty() {
         return Ok(());
     }
 
-    eprintln!("\nReturns (per-block names):");
-    for (i, ret_name) in sig.returns.iter().enumerate() {
-        let values: Vec<&str> = sig
-            .block_return_maps
-            .iter()
-            .map(|m| m.get(i).map(|s| s.as_str()).unwrap_or("?"))
-            .collect();
-        eprintln!("  {ret_name}: {}", values.join(" | "));
-    }
-
-    for i in 0..sig.returns.len() {
+    for &i in kept_indices {
         let current = sig.returns[i].clone();
         let new_name: String = Input::new()
             .with_prompt(format!("Rename {current}"))
@@ -163,6 +190,19 @@ pub fn remove_params(sig: &mut FunctionSignature, kept: &[usize]) {
         *arg_map = kept
             .iter()
             .filter_map(|&i| arg_map.get(i).cloned())
+            .collect();
+    }
+}
+
+/// Remove return values at indices NOT in `kept` from the signature.
+///
+/// Updates `sig.returns` and each entry in `sig.block_return_maps`.
+pub fn remove_returns(sig: &mut FunctionSignature, kept: &[usize]) {
+    sig.returns = kept.iter().map(|&i| sig.returns[i].clone()).collect();
+    for ret_map in &mut sig.block_return_maps {
+        *ret_map = kept
+            .iter()
+            .filter_map(|&i| ret_map.get(i).cloned())
             .collect();
     }
 }
@@ -212,8 +252,16 @@ pub fn run_interactive(
         remove_params(&mut sig, &kept_params);
     }
 
-    // Step 5: Return value rename.
-    rename_returns(&mut sig)?;
+    // Step 5a: Return value selection.
+    let kept_returns = select_returns(&sig)?;
+
+    // Step 5b: Return value rename (only kept returns).
+    rename_returns(&mut sig, &kept_returns)?;
+
+    // Apply return removal.
+    if kept_returns.len() < sig.returns.len() {
+        remove_returns(&mut sig, &kept_returns);
+    }
 
     // Stage 3: Apply refactoring.
     let result = rewrite::apply_refactoring(
@@ -301,6 +349,34 @@ mod tests {
         let mut sig = make_sig(&[], &[], &[&[]], &[&[]]);
         remove_params(&mut sig, &[]);
         assert!(sig.params.is_empty());
+    }
+
+    #[test]
+    fn remove_returns_keeps_selected() {
+        let mut sig = make_sig(
+            &["arg_0"],
+            &["ret_0", "ret_1"],
+            &[&["a"], &["b"]],
+            &[&["c", "d"], &["z", "w"]],
+        );
+        remove_returns(&mut sig, &[1]);
+        assert_eq!(sig.returns, vec!["ret_1"]);
+        assert_eq!(sig.block_return_maps[0], vec!["d"]);
+        assert_eq!(sig.block_return_maps[1], vec!["w"]);
+    }
+
+    #[test]
+    fn remove_returns_all_removed() {
+        let mut sig = make_sig(
+            &["arg_0"],
+            &["ret_0"],
+            &[&["a"], &["b"]],
+            &[&["c"], &["z"]],
+        );
+        remove_returns(&mut sig, &[]);
+        assert!(sig.returns.is_empty());
+        assert!(sig.block_return_maps[0].is_empty());
+        assert!(sig.block_return_maps[1].is_empty());
     }
 
     /// Simulate the full interactive pipeline programmatically:
@@ -471,6 +547,42 @@ print(d)
         if !sig.returns.is_empty() {
             assert!(result.contains("return output"));
         }
+    }
+
+    /// Simulate interactive with return value removal.
+    #[test]
+    fn simulated_interactive_return_removal() {
+        let source = "\
+a = 1
+b = a + 2
+print(b)
+c = 10
+d = c + 20
+print(d)
+";
+        let blocks = scan::find_matches(source, 1, 2).unwrap();
+        assert_eq!(blocks.len(), 2);
+
+        let plan = crate::plan_extraction(source, &blocks, 1, 2).unwrap();
+        let mut sig = plan.sig.clone();
+
+        // Remove all returns.
+        assert!(!sig.returns.is_empty(), "test expects returns to exist");
+        remove_returns(&mut sig, &[]);
+
+        let result = rewrite::apply_refactoring(
+            source,
+            &blocks,
+            &plan.ref_node_positions,
+            &sig,
+            "extracted_func_0",
+            &plan.scope_ctx,
+        );
+        // No return statement in function body.
+        assert!(!result.contains("return "));
+        // Calls should have no assignment target.
+        assert!(result.contains("\nextracted_func_0(") || result.contains("extracted_func_0(1"));
+        assert!(!result.contains("b = extracted_func_0("));
     }
 
     #[test]
