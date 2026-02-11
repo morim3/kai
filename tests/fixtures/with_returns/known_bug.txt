@@ -1,0 +1,2 @@
+Function body uses `return ret_0` but `ret_0` is never assigned.
+The return variable mapping is broken when the extracted block has both inputs and outputs.

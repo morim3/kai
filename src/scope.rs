@@ -344,6 +344,10 @@ mod tests {
         // `a = a + 1` — `a` on the RHS is loaded before being stored on the LHS.
         let block = parse_stmts("a = a + 1");
         let iface = analyze_block(&block, &[]);
-        assert_eq!(iface.inputs, vec!["a"], "a should be an input since RHS loads it first");
+        assert_eq!(
+            iface.inputs,
+            vec!["a"],
+            "a should be an input since RHS loads it first"
+        );
     }
 }

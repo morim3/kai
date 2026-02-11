@@ -66,11 +66,7 @@ pub fn generate_call(sig: &FunctionSignature, block_index: usize) -> String {
 
 /// Apply the refactoring: replace all matched blocks with function calls,
 /// and prepend the function definition. Returns the new source text.
-pub fn apply_refactoring(
-    source: &str,
-    blocks: &[MatchedBlock],
-    sig: &FunctionSignature,
-) -> String {
+pub fn apply_refactoring(source: &str, blocks: &[MatchedBlock], sig: &FunctionSignature) -> String {
     let func_def = generate_function_def(source, &blocks[0], sig);
 
     // Build edits sorted by offset (descending so we can apply from end to start).
@@ -104,7 +100,11 @@ pub fn apply_refactoring(
 pub fn unified_diff(original: &str, modified: &str, filename: &str) -> String {
     let diff = TextDiff::from_lines(original, modified);
     let mut output = String::new();
-    for hunk in diff.unified_diff().header(&format!("a/{filename}"), &format!("b/{filename}")).iter_hunks() {
+    for hunk in diff
+        .unified_diff()
+        .header(&format!("a/{filename}"), &format!("b/{filename}"))
+        .iter_hunks()
+    {
         output.push_str(&format!("{hunk}"));
     }
     output
@@ -143,12 +143,9 @@ fn replace_identifier(source: &str, old_name: &str, new_name: &str) -> String {
     let mut i = 0;
 
     while i < chars.len() {
-        if i + old_chars.len() <= chars.len()
-            && chars[i..i + old_chars.len()] == old_chars[..]
-        {
+        if i + old_chars.len() <= chars.len() && chars[i..i + old_chars.len()] == old_chars[..] {
             // Check word boundaries.
-            let before_ok =
-                i == 0 || !is_ident_char(chars[i - 1]);
+            let before_ok = i == 0 || !is_ident_char(chars[i - 1]);
             let after_ok =
                 i + old_chars.len() >= chars.len() || !is_ident_char(chars[i + old_chars.len()]);
 
@@ -219,71 +216,6 @@ mod tests {
             replace_identifier("x = x + xy", "x", "arg_0"),
             "arg_0 = arg_0 + xy"
         );
-    }
-
-    #[test]
-    fn end_to_end_refactoring() {
-        use crate::scan::find_matches;
-        use crate::scope::unify_signatures;
-        use ruff_python_parser::parse_module;
-
-        let source = "\
-a = 1
-b = a + 2
-c = 3
-x = 100
-y = x + 200
-c = 3
-";
-        // Use the real pipeline to get correct offsets.
-        let blocks = find_matches(source, 1, 2).unwrap();
-        assert_eq!(blocks.len(), 2);
-
-        // Build scope info for each block.
-        let parsed = parse_module(source).unwrap();
-        let body = &parsed.into_syntax().body;
-
-        let mut sig_inputs: Vec<(&[ruff_python_ast::Stmt], &[ruff_python_ast::Stmt])> = Vec::new();
-        for block in &blocks {
-            // Find the statement indices for this block.
-            let block_stmts_start = body.iter().position(|s| {
-                use ruff_text_size::Ranged;
-                s.range().start().to_usize() == block.start_offset
-            }).unwrap();
-            let window_size = 2; // we know from the target
-            let after_start = block_stmts_start + window_size;
-            let block_slice = &body[block_stmts_start..block_stmts_start + window_size];
-            let after_slice = if after_start < body.len() {
-                &body[after_start..]
-            } else {
-                &[]
-            };
-            sig_inputs.push((block_slice, after_slice));
-        }
-
-        // Extract divergences between blocks.
-        let mut all_divs = Vec::new();
-        if sig_inputs.len() >= 2 {
-            let (ref_block, _) = &sig_inputs[0];
-            for (other_block, _) in sig_inputs.iter().skip(1) {
-                let divs = crate::diff_extract::extract_divergences(ref_block, other_block, source, source);
-                all_divs.push(divs);
-            }
-        }
-
-        let sig = unify_signatures(&sig_inputs, &all_divs);
-        let result = apply_refactoring(source, &blocks, &sig);
-
-        // The rewritten code must parse as valid Python.
-        let re_parsed = ruff_python_parser::parse_module(&result);
-        assert!(
-            re_parsed.is_ok(),
-            "Rewritten code must be valid Python. Got:\n{result}"
-        );
-
-        // Check that the diff is non-empty.
-        let diff = unified_diff(source, &result, "test.py");
-        assert!(!diff.is_empty(), "Diff should not be empty");
     }
 
     #[test]

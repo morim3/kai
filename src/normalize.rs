@@ -2,9 +2,7 @@ use std::hash::{Hash, Hasher};
 
 use anyhow::{Result, bail};
 use ruff_python_ast::visitor::{Visitor, walk_expr, walk_stmt};
-use ruff_python_ast::{
-    BoolOp, CmpOp, Expr, ExprContext, Operator, Stmt, UnaryOp,
-};
+use ruff_python_ast::{BoolOp, CmpOp, Expr, ExprContext, Operator, Stmt, UnaryOp};
 use ruff_python_parser::parse_module;
 use ruff_text_size::Ranged;
 use rustc_hash::FxHasher;
@@ -307,7 +305,10 @@ mod tests {
         let block_b = "a = 100\nb = a + 200\nc = b * 300";
         let h1 = hash_snippet(block_a);
         let h2 = hash_snippet(block_b);
-        assert_eq!(h1, h2, "Multi-line structurally equivalent blocks must match");
+        assert_eq!(
+            h1, h2,
+            "Multi-line structurally equivalent blocks must match"
+        );
     }
 
     #[test]
@@ -366,10 +367,16 @@ mod tests {
         // Lines 2-2 = just `b = 2`
         let h_line2 = hash_block(code, 2, 2).unwrap();
         // Both are `VAR = CONST` so they should match.
-        assert_eq!(h_line1, h_line2, "Single assignment lines have same structure");
+        assert_eq!(
+            h_line1, h_line2,
+            "Single assignment lines have same structure"
+        );
 
         // Lines 1-2 should differ from 1-1 (two statements vs one).
         let h_lines_1_2 = hash_block(code, 1, 2).unwrap();
-        assert_ne!(h_line1, h_lines_1_2, "Different statement counts must differ");
+        assert_ne!(
+            h_line1, h_lines_1_2,
+            "Different statement counts must differ"
+        );
     }
 }
