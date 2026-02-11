@@ -84,8 +84,7 @@ pub fn extract_method_with_options(
         }
     }
 
-    let module_names = scope::collect_module_scope_names(top_body);
-    let sig = scope::unify_signatures(&sig_inputs, &all_divs, &module_names);
+    let sig = scope::unify_signatures(&sig_inputs, &all_divs);
     let func_name = options.func_name.as_deref().unwrap_or("extracted_func_0");
     Ok(rewrite::apply_refactoring(source, &blocks, &sig, func_name))
 }

@@ -13,41 +13,6 @@ fn is_builtin(name: &str) -> bool {
     is_python_builtin(name, DEFAULT_PY_MINOR, false)
 }
 
-/// Collect names defined at module scope that should not become function parameters.
-///
-/// This includes:
-/// - `import foo` → "foo" (or "bar" if `import foo as bar`)
-/// - `from module import name` → "name" (or "alias" if `as alias`)
-/// - Function definitions (`def func():`) → "func"
-/// - Class definitions (`class Cls:`) → "Cls"
-pub fn collect_module_scope_names(body: &[Stmt]) -> FxHashSet<String> {
-    let mut names = FxHashSet::default();
-    for stmt in body {
-        match stmt {
-            Stmt::Import(import) => {
-                for alias in import.names.iter() {
-                    let name = alias.asname.as_ref().unwrap_or(&alias.name).to_string();
-                    names.insert(name);
-                }
-            }
-            Stmt::ImportFrom(import_from) => {
-                for alias in import_from.names.iter() {
-                    let name = alias.asname.as_ref().unwrap_or(&alias.name).to_string();
-                    names.insert(name);
-                }
-            }
-            Stmt::FunctionDef(func) => {
-                names.insert(func.name.to_string());
-            }
-            Stmt::ClassDef(cls) => {
-                names.insert(cls.name.to_string());
-            }
-            _ => {}
-        }
-    }
-    names
-}
-
 /// The interface of an extracted function block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockInterface {
@@ -64,20 +29,14 @@ pub struct BlockInterface {
 /// - `block`: the statements being extracted.
 /// - `after_block`: statements that come after the block in the same scope
 ///   (used to determine which stored variables are live-out).
-/// - `excluded_names`: names visible from outer scope (module-level) that should
-///   not become function parameters (e.g., imports, top-level assignments).
-pub fn analyze_block(
-    block: &[Stmt],
-    after_block: &[Stmt],
-    excluded_names: &FxHashSet<String>,
-) -> BlockInterface {
+pub fn analyze_block(block: &[Stmt], after_block: &[Stmt]) -> BlockInterface {
     let mut collector = VarCollector::new();
     for stmt in block {
         collector.visit_stmt(stmt);
     }
 
-    // Inputs: loaded before being stored within the block, excluding outer-scope names.
-    let inputs = collector.inputs_excluding(excluded_names);
+    // Inputs: loaded before being stored within the block.
+    let inputs = collector.inputs();
 
     // Determine which variables stored in the block are used after it.
     let mut after_collector = VarCollector::new();
@@ -159,15 +118,13 @@ fn collect_literal_params(all_divergences: &[Vec<Divergence>]) -> Vec<Vec<String
 ///
 /// Each entry in `blocks` is `(block_stmts, after_stmts)`.
 /// `divergences` contains the structural differences between each block and block 0.
-/// `excluded_names` are outer-scope names that should not become parameters.
 pub fn unify_signatures(
     blocks: &[(&[Stmt], &[Stmt])],
     all_divergences: &[Vec<Divergence>],
-    excluded_names: &FxHashSet<String>,
 ) -> FunctionSignature {
     let interfaces: Vec<BlockInterface> = blocks
         .iter()
-        .map(|(block, after)| analyze_block(block, after, excluded_names))
+        .map(|(block, after)| analyze_block(block, after))
         .collect();
 
     // All blocks should have the same number of inputs/outputs (structurally identical).
@@ -247,12 +204,6 @@ impl VarCollector {
 
     /// Variables that are loaded before being stored (inputs).
     fn inputs(&self) -> Vec<String> {
-        self.inputs_excluding(&FxHashSet::default())
-    }
-
-    /// Variables that are loaded before being stored, excluding builtins and
-    /// names from outer scopes.
-    fn inputs_excluding(&self, excluded_names: &FxHashSet<String>) -> Vec<String> {
         let mut stored_set = FxHashSet::default();
         let mut input_set = FxHashSet::default();
         let mut inputs = Vec::new();
@@ -264,7 +215,6 @@ impl VarCollector {
                 VarAction::Load => {
                     if !stored_set.contains(name.as_str())
                         && !is_builtin(name)
-                        && !excluded_names.contains(name.as_str())
                         && input_set.insert(name.as_str())
                     {
                         inputs.push(name.clone());
@@ -332,16 +282,11 @@ mod tests {
     use super::*;
     use crate::test_utils::parse_stmts;
 
-    /// Empty excluded set for tests that don't need module-scope exclusion.
-    fn no_excluded() -> FxHashSet<String> {
-        FxHashSet::default()
-    }
-
     #[test]
     fn simple_inputs() {
         // `y = x + 1` — x is loaded, y is stored.
         let stmts = parse_stmts("y = x + 1");
-        let iface = analyze_block(&stmts, &[], &no_excluded());
+        let iface = analyze_block(&stmts, &[]);
         assert_eq!(iface.inputs, vec!["x"]);
         assert_eq!(iface.outputs, Vec::<String>::new());
     }
@@ -349,7 +294,7 @@ mod tests {
     #[test]
     fn input_not_duplicated_when_loaded_twice() {
         let stmts = parse_stmts("y = x + x");
-        let iface = analyze_block(&stmts, &[], &no_excluded());
+        let iface = analyze_block(&stmts, &[]);
         assert_eq!(iface.inputs, vec!["x"]);
     }
 
@@ -357,7 +302,7 @@ mod tests {
     fn store_then_load_is_not_input() {
         // `a = 1; b = a + 2` — `a` is stored first, so it's not an input.
         let stmts = parse_stmts("a = 1\nb = a + 2");
-        let iface = analyze_block(&stmts, &[], &no_excluded());
+        let iface = analyze_block(&stmts, &[]);
         assert_eq!(iface.inputs, Vec::<String>::new());
     }
 
@@ -365,7 +310,7 @@ mod tests {
     fn outputs_used_after_block() {
         let block = parse_stmts("result = x + 1");
         let after = parse_stmts("print(result)");
-        let iface = analyze_block(&block, &after, &no_excluded());
+        let iface = analyze_block(&block, &after);
         assert_eq!(iface.inputs, vec!["x"]);
         assert_eq!(iface.outputs, vec!["result"]);
     }
@@ -374,7 +319,7 @@ mod tests {
     fn outputs_not_used_after_block() {
         let block = parse_stmts("temp = x + 1");
         let after = parse_stmts("print(42)");
-        let iface = analyze_block(&block, &after, &no_excluded());
+        let iface = analyze_block(&block, &after);
         assert_eq!(iface.inputs, vec!["x"]);
         assert_eq!(iface.outputs, Vec::<String>::new());
     }
@@ -384,7 +329,7 @@ mod tests {
         // `x += 1` — x is both loaded and stored.
         let block = parse_stmts("x += 1");
         let after = parse_stmts("print(x)");
-        let iface = analyze_block(&block, &after, &no_excluded());
+        let iface = analyze_block(&block, &after);
         assert_eq!(iface.inputs, vec!["x"]);
         assert_eq!(iface.outputs, vec!["x"]);
     }
@@ -393,7 +338,7 @@ mod tests {
     fn multiple_inputs_and_outputs() {
         let block = parse_stmts("c = a + b\nd = c * 2");
         let after = parse_stmts("print(c, d)");
-        let iface = analyze_block(&block, &after, &no_excluded());
+        let iface = analyze_block(&block, &after);
         assert_eq!(iface.inputs, vec!["a", "b"]);
         assert_eq!(iface.outputs, vec!["c", "d"]);
     }
@@ -415,7 +360,6 @@ mod tests {
                 (block_b.as_slice(), after_b.as_slice()),
             ],
             &[divs],
-            &no_excluded(),
         );
 
         assert_eq!(sig.params, vec!["arg_0", "arg_1"]);
@@ -458,7 +402,6 @@ mod tests {
                 (block_c.as_slice(), &[]),
             ],
             &[divs_ab, divs_ac],
-            &no_excluded(),
         );
 
         // 2 literal divergences become 2 params (no variable inputs)
@@ -474,49 +417,11 @@ mod tests {
     fn load_before_store_in_same_statement() {
         // `a = a + 1` — `a` on the RHS is loaded before being stored on the LHS.
         let block = parse_stmts("a = a + 1");
-        let iface = analyze_block(&block, &[], &no_excluded());
+        let iface = analyze_block(&block, &[]);
         assert_eq!(
             iface.inputs,
             vec!["a"],
             "a should be an input since RHS loads it first"
         );
-    }
-
-    #[test]
-    fn collect_module_names_imports() {
-        let body = parse_stmts("import math\nfrom os import path\nfrom sys import argv as args");
-        let names = collect_module_scope_names(&body);
-        assert!(names.contains("math"));
-        assert!(names.contains("path"));
-        assert!(names.contains("args")); // aliased
-        assert!(!names.contains("argv")); // original name, not the alias
-    }
-
-    #[test]
-    fn collect_module_names_defs() {
-        let body = parse_stmts("def foo(): pass\nclass Bar: pass");
-        let names = collect_module_scope_names(&body);
-        assert!(names.contains("foo"));
-        assert!(names.contains("Bar"));
-    }
-
-    #[test]
-    fn excluded_names_not_in_inputs() {
-        // `y = math.sqrt(x)` with `math` excluded → only `x` is an input.
-        let block = parse_stmts("y = math.sqrt(x)");
-        let mut excluded = FxHashSet::default();
-        excluded.insert("math".to_string());
-        let iface = analyze_block(&block, &[], &excluded);
-        assert_eq!(iface.inputs, vec!["x"]);
-    }
-
-    #[test]
-    fn excluded_import_from_not_in_inputs() {
-        // `y = sqrt(x)` with `sqrt` excluded → only `x` is an input.
-        let block = parse_stmts("y = sqrt(x)");
-        let mut excluded = FxHashSet::default();
-        excluded.insert("sqrt".to_string());
-        let iface = analyze_block(&block, &[], &excluded);
-        assert_eq!(iface.inputs, vec!["x"]);
     }
 }
