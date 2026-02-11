@@ -123,16 +123,25 @@ Rustの堅牢なエコシステム、特にPython解析のデファクトスタ�
 * **発見した課題:** 兄弟スコープ（別関数の body）を横断スキャンしていない。
   → Iter 3.5 で修正。
 
-#### Iter 3.5: 兄弟スコープ横断スキャン
+#### Iter 3.5: 兄弟スコープ横断スキャン ✅
 * **方針:** 同一親スコープ内の兄弟 body（他の関数/クラスの body）も横断的にスキャンし、
   スコープをまたぐ重複ブロックを検出する。
-* **タスク:**
-  1. `scan.rs`: ターゲットの親 body を特定し、各兄弟の FunctionDef/ClassDef body もスキャン。
-  2. `lib.rs`: 各ブロックの `after_block` をそのブロックが属する body から取得。
-  3. 抽出した関数は共通の親スコープに配置。
+* **実装結果:**
+  1. `scan.rs`: `find_scopes` で innermost と parent を1回の探索で取得（統合済み）。
+  2. `scan.rs`: `find_body_for_block` で各マッチブロックの所属 body を特定。
+  3. `scan.rs`: `find_scope_for_matches` でクロススコープ時は親スコープコンテキストを使用。
+  4. `lib.rs`: per-block after_block 算出（各ブロックの所属 body から取得）。
 * **Exit Criteria:**
-  * `def foo(): a=1; b=a+2` と `def bar(): x=10; y=x+20` が同一関数に抽出されること。
-  * 同一スコープ内のマッチが引き続き正しく動作すること。
+  * `def foo(): a=1; b=a+2` と `def bar(): x=10; y=x+20` が同一関数に抽出されること。✅
+  * 同一スコープ内のマッチが引き続き正しく動作すること。✅
+
+#### リファクタリング: DRY & バグ修正 ✅
+* **スコープ探索統一:** `find_innermost_body_inner` + `find_parent_with_ctx_inner`
+  → 単一の `find_scopes_inner` に統合。1回の探索で innermost/parent 両方を返す（-69行）。
+* **indent計算統一:** scan.rs / rewrite.rs の重複 → `normalize::indent_at_offset` に共通化。
+* **AST ベース識別子置換:** `replace_identifier`（テキストベース）は文字列リテラル・コメント内の
+  識別子を誤置換するバグあり。`Visitor` で `Expr::Name` / `Expr::*Literal` の `TextRange` を収集し
+  ピンポイント置換する `replace_names_ast` に置換。
 
 #### Iter 4: 対話モード（配置位置選択含む）
 * **方針:** デフォルトは現在と同じ自動モード。`--interactive` で対話モードに切り替え、
