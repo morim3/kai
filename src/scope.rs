@@ -53,6 +53,17 @@ pub fn analyze_block(block: &[Stmt], after_block: &[Stmt]) -> BlockInterface {
     BlockInterface { inputs, outputs }
 }
 
+/// Get all variables that are stored (assigned) within a block, in order of first store.
+///
+/// Used by the interactive mode to offer additional return value candidates.
+pub fn block_stores(block: &[Stmt]) -> Vec<String> {
+    let mut collector = VarCollector::new();
+    for stmt in block {
+        collector.visit_stmt(stmt);
+    }
+    collector.stores()
+}
+
 /// Mapping of variables across structurally equivalent blocks.
 /// Maps each block's variable names to a common parameter name.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -226,6 +226,84 @@ fn rename_returns(sig: &mut FunctionSignature) -> Result<()> {
     Ok(())
 }
 
+/// Step 5: Offer additional return value candidates from block stores.
+///
+/// Shows variables stored in the block that are NOT already returns.
+/// User can select additional ones to include as return values.
+fn add_returns(
+    sig: &mut FunctionSignature,
+    block_stores: &[Vec<String>],
+) -> Result<()> {
+    if block_stores.is_empty() {
+        return Ok(());
+    }
+
+    // Candidates: variables stored in block 0 that are not already returns.
+    let existing: std::collections::HashSet<&str> = sig
+        .block_return_maps
+        .first()
+        .map(|m| m.iter().map(|s| s.as_str()).collect())
+        .unwrap_or_default();
+
+    let ref_stores = &block_stores[0];
+    let candidate_indices: Vec<usize> = ref_stores
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| !existing.contains(name.as_str()))
+        .map(|(i, _)| i)
+        .collect();
+
+    if candidate_indices.is_empty() {
+        return Ok(());
+    }
+
+    let items: Vec<String> = candidate_indices
+        .iter()
+        .map(|&i| {
+            let values: Vec<&str> = block_stores
+                .iter()
+                .map(|stores| stores.get(i).map(|s| s.as_str()).unwrap_or("?"))
+                .collect();
+            format!("{}: {}", ref_stores[i], values.join(" | "))
+        })
+        .collect();
+
+    eprintln!("\nAdditional return candidates (variables stored in block):");
+    for item in &items {
+        eprintln!("  [ ] {item}");
+    }
+
+    let defaults: Vec<bool> = vec![false; items.len()];
+    let selections = MultiSelect::new()
+        .with_prompt("Add return values [Space=toggle, Enter=confirm]")
+        .items(&items)
+        .defaults(&defaults)
+        .interact()?;
+
+    if selections.is_empty() {
+        return Ok(());
+    }
+
+    // Add selected stores to sig.returns and block_return_maps.
+    let ret_count = sig.returns.len();
+    for (sel_idx, &sel) in selections.iter().enumerate() {
+        let store_idx = candidate_indices[sel];
+        let ret_name = format!("ret_{}", ret_count + sel_idx);
+        sig.returns.push(ret_name);
+
+        for (block_idx, ret_map) in sig.block_return_maps.iter_mut().enumerate() {
+            let var_name = block_stores
+                .get(block_idx)
+                .and_then(|s| s.get(store_idx))
+                .cloned()
+                .unwrap_or_default();
+            ret_map.push(var_name);
+        }
+    }
+
+    Ok(())
+}
+
 // ── Signature mutation utilities (public for testing) ────────────────
 
 /// Remove parameters at indices NOT in `kept` from the signature.
@@ -290,6 +368,9 @@ pub fn run_interactive(
 
     // Step 4: Return value rename.
     rename_returns(&mut sig)?;
+
+    // Step 5: Add additional return values.
+    add_returns(&mut sig, &plan.block_stores)?;
 
     // Stage 3: Apply refactoring.
     let result = rewrite::apply_refactoring(
@@ -613,6 +694,153 @@ print(d)
             &plan.scope_ctx,
         );
         assert!(validate_output(&result).is_ok(), "custom names must be valid");
+    }
+
+    // ── add_returns logic tests (unit-level, no TTY) ──
+
+    /// Verify that add_returns correctly modifies the signature when called
+    /// with pre-computed selections (simulating the MultiSelect result).
+    #[test]
+    fn add_returns_logic_adds_store_variables() {
+        // Simulate: 2 blocks, each stores a, b.  Returns already has "b".
+        // Candidate should be "a" only.  We simulate adding it.
+        let mut sig = make_sig(
+            &["arg_0"],
+            &["ret_0"],
+            &[&["x"], &["y"]],
+            &[&["b"], &["d"]],
+        );
+        let block_stores = vec![
+            vec!["a".to_string(), "b".to_string()],
+            vec!["c".to_string(), "d".to_string()],
+        ];
+
+        // Manually invoke the logic that add_returns would do (skipping MultiSelect).
+        let existing: std::collections::HashSet<&str> = sig
+            .block_return_maps[0]
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let ref_stores = &block_stores[0];
+        let candidate_indices: Vec<usize> = ref_stores
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| !existing.contains(name.as_str()))
+            .map(|(i, _)| i)
+            .collect();
+
+        // "a" at index 0 is the only candidate (b is already a return).
+        assert_eq!(candidate_indices, vec![0]);
+
+        // Simulate user selecting the candidate.
+        let selections = vec![0usize]; // index into candidate_indices
+        let ret_count = sig.returns.len();
+        for (sel_idx, &sel) in selections.iter().enumerate() {
+            let store_idx = candidate_indices[sel];
+            let ret_name = format!("ret_{}", ret_count + sel_idx);
+            sig.returns.push(ret_name);
+            for (block_idx, ret_map) in sig.block_return_maps.iter_mut().enumerate() {
+                let var_name = block_stores
+                    .get(block_idx)
+                    .and_then(|s| s.get(store_idx))
+                    .cloned()
+                    .unwrap_or_default();
+                ret_map.push(var_name);
+            }
+        }
+
+        assert_eq!(sig.returns, vec!["ret_0", "ret_1"]);
+        assert_eq!(sig.block_return_maps[0], vec!["b", "a"]);
+        assert_eq!(sig.block_return_maps[1], vec!["d", "c"]);
+    }
+
+    #[test]
+    fn add_returns_no_candidates_when_all_stores_already_returned() {
+        let sig = make_sig(
+            &["arg_0"],
+            &["ret_0"],
+            &[&["x"], &["y"]],
+            &[&["a"], &["b"]],
+        );
+        let block_stores = vec![
+            vec!["a".to_string()],
+            vec!["b".to_string()],
+        ];
+
+        let existing: std::collections::HashSet<&str> = sig
+            .block_return_maps[0]
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let ref_stores = &block_stores[0];
+        let candidate_indices: Vec<usize> = ref_stores
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| !existing.contains(name.as_str()))
+            .map(|(i, _)| i)
+            .collect();
+
+        assert!(candidate_indices.is_empty(), "no candidates when all stores are already returns");
+    }
+
+    /// End-to-end: plan_extraction provides block_stores, then simulated add_returns
+    /// produces valid Python.
+    #[test]
+    fn simulated_add_returns_produces_valid_python() {
+        let source = "\
+a = 1
+b = a + 2
+print(b)
+c = 10
+d = c + 20
+print(d)
+";
+        let blocks = scan::find_matches(source, 1, 2).unwrap();
+        let plan = crate::plan_extraction(source, &blocks, 1, 2).unwrap();
+        let mut sig = plan.sig.clone();
+
+        // block_stores should contain the variables stored in each block.
+        assert!(!plan.block_stores.is_empty());
+        assert!(!plan.block_stores[0].is_empty());
+
+        // Find candidates and add the first one that isn't already returned.
+        let existing: std::collections::HashSet<&str> = sig
+            .block_return_maps
+            .first()
+            .map(|m| m.iter().map(|s| s.as_str()).collect())
+            .unwrap_or_default();
+        let ref_stores = &plan.block_stores[0];
+        let candidate_indices: Vec<usize> = ref_stores
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| !existing.contains(name.as_str()))
+            .map(|(i, _)| i)
+            .collect();
+
+        if !candidate_indices.is_empty() {
+            // Add first candidate.
+            let store_idx = candidate_indices[0];
+            let ret_name = format!("ret_{}", sig.returns.len());
+            sig.returns.push(ret_name);
+            for (block_idx, ret_map) in sig.block_return_maps.iter_mut().enumerate() {
+                let var_name = plan.block_stores
+                    .get(block_idx)
+                    .and_then(|s| s.get(store_idx))
+                    .cloned()
+                    .unwrap_or_default();
+                ret_map.push(var_name);
+            }
+        }
+
+        let result = rewrite::apply_refactoring(
+            source,
+            &blocks,
+            &plan.ref_node_positions,
+            &sig,
+            "extracted_func_0",
+            &plan.scope_ctx,
+        );
+        assert!(validate_output(&result).is_ok(), "added return must produce valid Python");
     }
 
     #[test]

@@ -42,6 +42,10 @@ pub struct ExtractionPlan {
     pub scope_ctx: ScopeContext,
     /// Pre-collected AST node positions `(byte_offset, byte_len)` for block 0.
     pub ref_node_positions: Vec<(usize, usize)>,
+    /// All store (assigned) variables per block, in order of first store.
+    /// `block_stores[i]` corresponds to `blocks[i]`. Used by interactive mode
+    /// to offer additional return value candidates.
+    pub block_stores: Vec<Vec<String>>,
 }
 
 /// Stage 1+2: Scan for matches, then compute the extraction plan.
@@ -104,10 +108,17 @@ pub fn plan_extraction(
     let ref_stmts = sig_inputs[0].0;
     let ref_node_positions = rewrite::collect_node_positions(ref_stmts);
 
+    // Collect all store variables per block (for interactive return-value addition).
+    let block_stores: Vec<Vec<String>> = sig_inputs
+        .iter()
+        .map(|(block, _)| scope::block_stores(block))
+        .collect();
+
     Ok(ExtractionPlan {
         sig,
         scope_ctx,
         ref_node_positions,
+        block_stores,
     })
 }
 
