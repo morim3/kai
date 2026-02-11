@@ -281,45 +281,55 @@ mod tests {
         hash_block(code, 1, line_count).expect("hash_block failed")
     }
 
-    // ---- Phase 1 Exit Criteria Tests ----
-
+    /// Parameterized test: pairs of structurally equivalent snippets must hash equal.
     #[test]
-    fn identical_structure_different_names_same_hash() {
-        // `a = 1 + 2` and `x = 10 + 20` must produce the same hash.
-        let h1 = hash_snippet("a = 1 + 2");
-        let h2 = hash_snippet("x = 10 + 20");
-        assert_eq!(h1, h2, "Structurally equivalent snippets must hash equal");
+    fn structurally_equivalent_pairs_hash_equal() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("a = 1 + 2", "x = 10 + 20", "simple assignment"),
+            (
+                "x = 1\ny = x + 2\nz = y * 3",
+                "a = 100\nb = a + 200\nc = b * 300",
+                "multi-line block",
+            ),
+            ("foo(x, y)", "bar(a, b)", "function call"),
+            (
+                "if x > 0:\n    y = x + 1",
+                "if a > 0:\n    b = a + 1",
+                "if statement",
+            ),
+            (
+                "for i in items:\n    print(i)",
+                "for x in data:\n    print(x)",
+                "for loop",
+            ),
+        ];
+        for (a, b, label) in cases {
+            assert_eq!(
+                hash_snippet(a),
+                hash_snippet(b),
+                "{label}: structurally equivalent snippets must hash equal"
+            );
+        }
     }
 
+    /// Parameterized test: structurally different snippets must hash differently.
     #[test]
-    fn different_structure_different_hash() {
-        // `a = 1 + 2` vs `a = 1 - 2` differ in operator.
-        let h1 = hash_snippet("a = 1 + 2");
-        let h2 = hash_snippet("a = 1 - 2");
-        assert_ne!(h1, h2, "Different operators must produce different hashes");
-    }
-
-    #[test]
-    fn multiline_blocks_same_structure() {
-        let block_a = "x = 1\ny = x + 2\nz = y * 3";
-        let block_b = "a = 100\nb = a + 200\nc = b * 300";
-        let h1 = hash_snippet(block_a);
-        let h2 = hash_snippet(block_b);
-        assert_eq!(
-            h1, h2,
-            "Multi-line structurally equivalent blocks must match"
-        );
-    }
-
-    #[test]
-    fn variable_reuse_pattern_matters() {
-        // `a = 1; b = a + 2` (VAR_0 = CONST; VAR_1 = VAR_0 + CONST)
-        // vs
-        // `a = 1; b = b + 2` (VAR_0 = CONST; VAR_1 = VAR_1 + CONST)
-        // These differ because the second expr refers to VAR_1 not VAR_0.
-        let h1 = hash_snippet("a = 1\nb = a + 2");
-        let h2 = hash_snippet("a = 1\nb = b + 2");
-        assert_ne!(h1, h2, "Different variable-reference patterns must differ");
+    fn structurally_different_pairs_hash_differ() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("a = 1 + 2", "a = 1 - 2", "different operator"),
+            (
+                "a = 1\nb = a + 2",
+                "a = 1\nb = b + 2",
+                "different variable-reference pattern",
+            ),
+        ];
+        for (a, b, label) in cases {
+            assert_ne!(
+                hash_snippet(a),
+                hash_snippet(b),
+                "{label}: structurally different snippets must hash differently"
+            );
+        }
     }
 
     #[test]
@@ -335,44 +345,15 @@ mod tests {
     }
 
     #[test]
-    fn function_call_same_structure() {
-        let h1 = hash_snippet("foo(x, y)");
-        let h2 = hash_snippet("bar(a, b)");
-        assert_eq!(h1, h2, "Function calls with same structure must match");
-    }
-
-    #[test]
-    fn if_statement_same_structure() {
-        let a = "if x > 0:\n    y = x + 1";
-        let b = "if a > 0:\n    b = a + 1";
-        let h1 = hash_snippet(a);
-        let h2 = hash_snippet(b);
-        assert_eq!(h1, h2, "If statements with same structure must match");
-    }
-
-    #[test]
-    fn for_loop_same_structure() {
-        let a = "for i in items:\n    print(i)";
-        let b = "for x in data:\n    print(x)";
-        let h1 = hash_snippet(a);
-        let h2 = hash_snippet(b);
-        assert_eq!(h1, h2, "For loops with same structure must match");
-    }
-
-    #[test]
     fn line_range_selection() {
         let code = "a = 1\nb = 2\nc = 3";
-        // Lines 1-1 = just `a = 1`
         let h_line1 = hash_block(code, 1, 1).unwrap();
-        // Lines 2-2 = just `b = 2`
         let h_line2 = hash_block(code, 2, 2).unwrap();
-        // Both are `VAR = CONST` so they should match.
         assert_eq!(
             h_line1, h_line2,
             "Single assignment lines have same structure"
         );
 
-        // Lines 1-2 should differ from 1-1 (two statements vs one).
         let h_lines_1_2 = hash_block(code, 1, 2).unwrap();
         assert_ne!(
             h_line1, h_lines_1_2,

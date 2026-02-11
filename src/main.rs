@@ -38,16 +38,25 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let source = std::fs::read_to_string(&cli.file)?;
 
+    let select = cli
+        .select
+        .map(|s| {
+            s.split(',')
+                .map(|p| {
+                    p.trim()
+                        .parse::<usize>()
+                        .map_err(|_| anyhow::anyhow!("invalid block index: {:?}", p.trim()))
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?;
+
     let options = pym::ExtractOptions {
         func_name: cli.name,
         param_names: cli
             .args
             .map(|s| s.split(',').map(|p| p.trim().to_string()).collect()),
-        select: cli.select.map(|s| {
-            s.split(',')
-                .map(|p| p.trim().parse::<usize>().expect("invalid block index"))
-                .collect()
-        }),
+        select,
     };
 
     let result = pym::extract_method_with_options(&source, cli.start_line, cli.end_line, &options)?;

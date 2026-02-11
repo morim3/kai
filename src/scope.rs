@@ -60,6 +60,50 @@ pub struct FunctionSignature {
     pub block_return_maps: Vec<Vec<String>>,
 }
 
+/// Collect literal divergences across all blocks into a table of per-parameter values.
+///
+/// `all_divergences[i]` contains divergences between block 0 and block `i+1`.
+/// Returns a `Vec<Vec<String>>` where `result[param_idx][block_idx]` is the literal
+/// value for that parameter in that block.
+fn collect_literal_params(
+    all_divergences: &[Vec<crate::diff_extract::Divergence>],
+) -> Vec<Vec<String>> {
+    let first_divs = match all_divergences.first() {
+        Some(d) => d,
+        None => return Vec::new(),
+    };
+
+    let mut params: Vec<Vec<String>> = Vec::new();
+
+    for div in first_divs {
+        if let crate::diff_extract::Divergence::Literal(val_0, val_1) = div {
+            let num_blocks = all_divergences.len() + 1; // +1 for block 0 itself
+            let mut per_block = Vec::with_capacity(num_blocks);
+            per_block.push(val_0.clone()); // block 0
+            per_block.push(val_1.clone()); // block 1
+
+            // For blocks 2..N, find the matching literal divergence by ordinal position.
+            let current_lit_idx = params.len();
+            for other_divs in all_divergences.iter().skip(1) {
+                let value = other_divs
+                    .iter()
+                    .filter_map(|od| match od {
+                        crate::diff_extract::Divergence::Literal(_, v) => Some(v),
+                        _ => None,
+                    })
+                    .nth(current_lit_idx)
+                    .cloned()
+                    .unwrap_or_else(|| val_0.clone()); // fallback: reuse block 0's value
+                per_block.push(value);
+            }
+
+            params.push(per_block);
+        }
+    }
+
+    params
+}
+
 /// Given multiple structurally equivalent blocks and their after-blocks,
 /// compute a unified function signature and variable mappings.
 ///
@@ -78,39 +122,7 @@ pub fn unify_signatures(
     // All blocks should have the same number of inputs/outputs (structurally identical).
     let param_count = interfaces.first().map_or(0, |i| i.inputs.len());
 
-    // Collect literal divergences as additional parameters.
-    // Each literal divergence adds a param; we use the values from each block as args.
-    let mut literal_param_values: Vec<Vec<String>> = Vec::new(); // [param_idx][block_idx]
-
-    if let Some(first_divs) = all_divergences.first() {
-        for div in first_divs {
-            if let crate::diff_extract::Divergence::Literal(val_0, val_1) = div {
-                // Initialize with block 0's value, then block 1's value.
-                let mut per_block = vec![val_0.clone()];
-                per_block.push(val_1.clone());
-                // For remaining blocks (if any), find the corresponding divergence.
-                for other_divs in all_divergences.iter().skip(1) {
-                    // Find the matching literal divergence by position.
-                    let mut lit_idx = 0;
-                    let mut found = false;
-                    for od in other_divs {
-                        if let crate::diff_extract::Divergence::Literal(_, v) = od {
-                            if lit_idx == literal_param_values.len() {
-                                per_block.push(v.clone());
-                                found = true;
-                                break;
-                            }
-                            lit_idx += 1;
-                        }
-                    }
-                    if !found {
-                        per_block.push(val_0.clone()); // fallback
-                    }
-                }
-                literal_param_values.push(per_block);
-            }
-        }
-    }
+    let literal_param_values = collect_literal_params(all_divergences);
 
     let lit_count = literal_param_values.len();
     let total_params = param_count + lit_count;
@@ -376,6 +388,53 @@ mod tests {
         assert_eq!(sig.params, vec!["lhs", "rhs"]);
         // Returns still use auto-generated names
         assert_eq!(sig.returns, vec!["ret_0"]);
+    }
+
+    #[test]
+    fn collect_literal_params_empty() {
+        let result = collect_literal_params(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn collect_literal_params_no_literals() {
+        use crate::diff_extract::Divergence;
+        let divs = vec![vec![Divergence::Name("a".into(), "b".into())]];
+        let result = collect_literal_params(&divs);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn unify_three_blocks_with_literal_divergence() {
+        // Three blocks: `x = 1 + 2`, `x = 10 + 20`, `x = 100 + 200`
+        let src_a = "x = 1 + 2";
+        let src_b = "x = 10 + 20";
+        let src_c = "x = 100 + 200";
+        let block_a = parse_stmts(src_a);
+        let block_b = parse_stmts(src_b);
+        let block_c = parse_stmts(src_c);
+
+        // Divergences: block_a vs block_b, block_a vs block_c
+        let divs_ab = crate::diff_extract::extract_divergences(&block_a, &block_b, src_a, src_b);
+        let divs_ac = crate::diff_extract::extract_divergences(&block_a, &block_c, src_a, src_c);
+
+        let sig = unify_signatures(
+            &[
+                (block_a.as_slice(), &[]),
+                (block_b.as_slice(), &[]),
+                (block_c.as_slice(), &[]),
+            ],
+            &[divs_ab, divs_ac],
+            &None,
+        );
+
+        // 2 literal divergences become 2 params (no variable inputs)
+        assert_eq!(sig.params, vec!["arg_0", "arg_1"]);
+        // Each block's arg map should contain its own literal values
+        assert_eq!(
+            sig.block_arg_maps,
+            vec![vec!["1", "2"], vec!["10", "20"], vec!["100", "200"],]
+        );
     }
 
     #[test]
