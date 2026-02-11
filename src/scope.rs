@@ -4,6 +4,7 @@ use ruff_python_stdlib::builtins::is_python_builtin;
 use rustc_hash::FxHashSet;
 
 use crate::diff_extract::Divergence;
+use crate::scan::ScopeKind;
 
 /// Default Python minor version for builtin detection (Python 3.12).
 const DEFAULT_PY_MINOR: u8 = 12;
@@ -29,7 +30,14 @@ pub struct BlockInterface {
 /// - `block`: the statements being extracted.
 /// - `after_block`: statements that come after the block in the same scope
 ///   (used to determine which stored variables are live-out).
-pub fn analyze_block(block: &[Stmt], after_block: &[Stmt]) -> BlockInterface {
+/// - `scope_kind`: determines output strategy. For `Function`, only stores
+///   used in `after_block` are outputs. For `Class`/`Module`, all stores
+///   are outputs (they become namespace-level names).
+pub fn analyze_block(
+    block: &[Stmt],
+    after_block: &[Stmt],
+    scope_kind: ScopeKind,
+) -> BlockInterface {
     let mut collector = VarCollector::new();
     for stmt in block {
         collector.visit_stmt(stmt);
@@ -38,21 +46,25 @@ pub fn analyze_block(block: &[Stmt], after_block: &[Stmt]) -> BlockInterface {
     // Inputs: loaded before being stored within the block.
     let inputs = collector.inputs();
 
-    // Determine which variables stored in the block are used after it.
-    let mut after_collector = VarCollector::new();
-    for stmt in after_block {
-        after_collector.visit_stmt(stmt);
-    }
-    // Only variables that are loaded *before* being stored in the after-block
-    // are truly live-out. Using inputs() (not all_loads()) avoids false positives
-    // when the after-block overwrites a variable before reading it.
-    let after_inputs = after_collector.inputs();
-
-    let outputs: Vec<String> = collector
-        .stores()
-        .into_iter()
-        .filter(|name| after_inputs.contains(name))
-        .collect();
+    let outputs = match scope_kind {
+        ScopeKind::Class => {
+            // All stores become outputs (class attributes).
+            collector.stores()
+        }
+        ScopeKind::Module | ScopeKind::Function => {
+            // Only variables used after the block are outputs.
+            let mut after_collector = VarCollector::new();
+            for stmt in after_block {
+                after_collector.visit_stmt(stmt);
+            }
+            let after_inputs = after_collector.inputs();
+            collector
+                .stores()
+                .into_iter()
+                .filter(|name| after_inputs.contains(name))
+                .collect()
+        }
+    };
 
     BlockInterface { inputs, outputs }
 }
@@ -121,10 +133,11 @@ fn collect_literal_params(all_divergences: &[Vec<Divergence>]) -> Vec<Vec<String
 pub fn unify_signatures(
     blocks: &[(&[Stmt], &[Stmt])],
     all_divergences: &[Vec<Divergence>],
+    scope_kind: ScopeKind,
 ) -> FunctionSignature {
     let interfaces: Vec<BlockInterface> = blocks
         .iter()
-        .map(|(block, after)| analyze_block(block, after))
+        .map(|(block, after)| analyze_block(block, after, scope_kind))
         .collect();
 
     // All blocks should have the same number of inputs/outputs (structurally identical).
@@ -286,7 +299,7 @@ mod tests {
     fn simple_inputs() {
         // `y = x + 1` — x is loaded, y is stored.
         let stmts = parse_stmts("y = x + 1");
-        let iface = analyze_block(&stmts, &[]);
+        let iface = analyze_block(&stmts, &[], ScopeKind::Function);
         assert_eq!(iface.inputs, vec!["x"]);
         assert_eq!(iface.outputs, Vec::<String>::new());
     }
@@ -294,7 +307,7 @@ mod tests {
     #[test]
     fn input_not_duplicated_when_loaded_twice() {
         let stmts = parse_stmts("y = x + x");
-        let iface = analyze_block(&stmts, &[]);
+        let iface = analyze_block(&stmts, &[], ScopeKind::Function);
         assert_eq!(iface.inputs, vec!["x"]);
     }
 
@@ -302,7 +315,7 @@ mod tests {
     fn store_then_load_is_not_input() {
         // `a = 1; b = a + 2` — `a` is stored first, so it's not an input.
         let stmts = parse_stmts("a = 1\nb = a + 2");
-        let iface = analyze_block(&stmts, &[]);
+        let iface = analyze_block(&stmts, &[], ScopeKind::Function);
         assert_eq!(iface.inputs, Vec::<String>::new());
     }
 
@@ -310,7 +323,7 @@ mod tests {
     fn outputs_used_after_block() {
         let block = parse_stmts("result = x + 1");
         let after = parse_stmts("print(result)");
-        let iface = analyze_block(&block, &after);
+        let iface = analyze_block(&block, &after, ScopeKind::Function);
         assert_eq!(iface.inputs, vec!["x"]);
         assert_eq!(iface.outputs, vec!["result"]);
     }
@@ -319,7 +332,7 @@ mod tests {
     fn outputs_not_used_after_block() {
         let block = parse_stmts("temp = x + 1");
         let after = parse_stmts("print(42)");
-        let iface = analyze_block(&block, &after);
+        let iface = analyze_block(&block, &after, ScopeKind::Function);
         assert_eq!(iface.inputs, vec!["x"]);
         assert_eq!(iface.outputs, Vec::<String>::new());
     }
@@ -329,7 +342,7 @@ mod tests {
         // `x += 1` — x is both loaded and stored.
         let block = parse_stmts("x += 1");
         let after = parse_stmts("print(x)");
-        let iface = analyze_block(&block, &after);
+        let iface = analyze_block(&block, &after, ScopeKind::Function);
         assert_eq!(iface.inputs, vec!["x"]);
         assert_eq!(iface.outputs, vec!["x"]);
     }
@@ -338,9 +351,16 @@ mod tests {
     fn multiple_inputs_and_outputs() {
         let block = parse_stmts("c = a + b\nd = c * 2");
         let after = parse_stmts("print(c, d)");
-        let iface = analyze_block(&block, &after);
+        let iface = analyze_block(&block, &after, ScopeKind::Function);
         assert_eq!(iface.inputs, vec!["a", "b"]);
         assert_eq!(iface.outputs, vec!["c", "d"]);
+    }
+
+    #[test]
+    fn class_scope_all_stores_are_outputs() {
+        let block = parse_stmts("x = 1\ny = x + 2");
+        let iface = analyze_block(&block, &[], ScopeKind::Class);
+        assert_eq!(iface.outputs, vec!["x", "y"]);
     }
 
     #[test]
@@ -360,6 +380,7 @@ mod tests {
                 (block_b.as_slice(), after_b.as_slice()),
             ],
             &[divs],
+            ScopeKind::Function,
         );
 
         assert_eq!(sig.params, vec!["arg_0", "arg_1"]);
@@ -402,6 +423,7 @@ mod tests {
                 (block_c.as_slice(), &[]),
             ],
             &[divs_ab, divs_ac],
+            ScopeKind::Function,
         );
 
         // 2 literal divergences become 2 params (no variable inputs)
@@ -417,7 +439,7 @@ mod tests {
     fn load_before_store_in_same_statement() {
         // `a = a + 1` — `a` on the RHS is loaded before being stored on the LHS.
         let block = parse_stmts("a = a + 1");
-        let iface = analyze_block(&block, &[]);
+        let iface = analyze_block(&block, &[], ScopeKind::Function);
         assert_eq!(
             iface.inputs,
             vec!["a"],

@@ -21,6 +21,10 @@ pub struct ScopeContext {
     pub body_start_offset: usize,
     /// Indentation string for code inside this scope (e.g. "    " for function body).
     pub indent: String,
+    /// For Class scope: byte offset of the `class` statement (to insert function before it).
+    pub class_def_offset: Option<usize>,
+    /// For Class scope: indentation of the parent scope.
+    pub parent_indent: Option<String>,
 }
 
 /// Find the innermost scope body containing the given line range.
@@ -35,7 +39,15 @@ pub fn find_innermost_body<'a>(
     target_start: usize,
     target_end: usize,
 ) -> (&'a [Stmt], ScopeContext) {
-    find_innermost_body_inner(body, source, target_start, target_end, ScopeKind::Module)
+    find_innermost_body_inner(
+        body,
+        source,
+        target_start,
+        target_end,
+        ScopeKind::Module,
+        None,
+        None,
+    )
 }
 
 fn find_innermost_body_inner<'a>(
@@ -44,6 +56,9 @@ fn find_innermost_body_inner<'a>(
     target_start: usize,
     target_end: usize,
     current_kind: ScopeKind,
+    // For Class scope: offset and indent of the parent scope.
+    class_def_offset: Option<usize>,
+    parent_indent: Option<String>,
 ) -> (&'a [Stmt], ScopeContext) {
     for stmt in body {
         let range = stmt.range();
@@ -59,15 +74,21 @@ fn find_innermost_body_inner<'a>(
                         target_start,
                         target_end,
                         ScopeKind::Function,
+                        None,
+                        None,
                     );
                 }
                 Stmt::ClassDef(c) => {
+                    // Compute the parent indent from the current body.
+                    let current_indent = compute_indent(body, source);
                     return find_innermost_body_inner(
                         &c.body,
                         source,
                         target_start,
                         target_end,
                         ScopeKind::Class,
+                        Some(range.start().to_usize()),
+                        Some(current_indent),
                     );
                 }
                 _ => {}
@@ -87,8 +108,21 @@ fn find_innermost_body_inner<'a>(
         kind: current_kind,
         body_start_offset,
         indent,
+        class_def_offset,
+        parent_indent,
     };
     (body, ctx)
+}
+
+/// Compute the indentation of the first statement in a body.
+fn compute_indent(body: &[Stmt], source: &str) -> String {
+    if let Some(first) = body.first() {
+        let offset = first.range().start().to_usize();
+        let line_start = source[..offset].rfind('\n').map_or(0, |p| p + 1);
+        source[line_start..offset].to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// A matched block in the source file.
