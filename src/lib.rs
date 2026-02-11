@@ -4,7 +4,7 @@ pub mod rewrite;
 pub mod scan;
 pub mod scope;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use ruff_text_size::Ranged;
 
 /// Options for customizing the extract-method refactoring.
@@ -54,7 +54,7 @@ pub fn extract_method_with_options(
         let idx = body
             .iter()
             .position(|s| s.range().start().to_usize() == block.start_offset)
-            .expect("block offset should match a statement");
+            .context("block offset does not match any statement")?;
         let after_start = idx + window_size;
         let block_slice = &body[idx..idx + window_size];
         let after_slice = if after_start < body.len() {
