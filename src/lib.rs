@@ -4,6 +4,20 @@ pub mod rewrite;
 pub mod scan;
 pub mod scope;
 
+/// Shared test utilities available to all `#[cfg(test)]` modules in this crate.
+#[cfg(test)]
+pub(crate) mod test_utils {
+    use ruff_python_ast::Stmt;
+
+    /// Parse Python source and return the top-level body statements.
+    pub fn parse_stmts(source: &str) -> Vec<Stmt> {
+        ruff_python_parser::parse_module(source)
+            .unwrap()
+            .into_syntax()
+            .body
+    }
+}
+
 use anyhow::{Context, Result, bail};
 use ruff_text_size::Ranged;
 

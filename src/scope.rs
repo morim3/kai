@@ -1,5 +1,6 @@
 use ruff_python_ast::visitor::{Visitor, walk_expr, walk_stmt};
 use ruff_python_ast::{Expr, ExprContext, Stmt};
+use rustc_hash::FxHashSet;
 
 /// The interface of an extracted function block.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,17 +190,16 @@ impl VarCollector {
 
     /// Variables that are loaded before being stored (inputs).
     fn inputs(&self) -> Vec<String> {
-        let mut stored = Vec::new();
+        let mut stored_set = FxHashSet::default();
+        let mut input_set = FxHashSet::default();
         let mut inputs = Vec::new();
         for (name, action) in &self.events {
             match action {
                 VarAction::Store => {
-                    if !stored.contains(name) {
-                        stored.push(name.clone());
-                    }
+                    stored_set.insert(name.as_str());
                 }
                 VarAction::Load => {
-                    if !stored.contains(name) && !inputs.contains(name) {
+                    if !stored_set.contains(name.as_str()) && input_set.insert(name.as_str()) {
                         inputs.push(name.clone());
                     }
                 }
@@ -210,9 +210,10 @@ impl VarCollector {
 
     /// All variables that are stored in this block (in order of first store).
     fn stores(&self) -> Vec<String> {
+        let mut seen = FxHashSet::default();
         let mut result = Vec::new();
         for (name, action) in &self.events {
-            if *action == VarAction::Store && !result.contains(name) {
+            if *action == VarAction::Store && seen.insert(name.as_str()) {
                 result.push(name.clone());
             }
         }
@@ -262,12 +263,7 @@ impl<'a> Visitor<'a> for VarCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ruff_python_parser::parse_module;
-
-    /// Parse source and return the body statements.
-    fn parse_stmts(source: &str) -> Vec<Stmt> {
-        parse_module(source).unwrap().into_syntax().body
-    }
+    use crate::test_utils::parse_stmts;
 
     #[test]
     fn simple_inputs() {

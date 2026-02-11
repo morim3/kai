@@ -150,11 +150,7 @@ fn diff_exprs(a: &Expr, b: &Expr, sa: &str, sb: &str, out: &mut Vec<Divergence>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ruff_python_parser::parse_module;
-
-    fn parse_stmts(source: &str) -> Vec<Stmt> {
-        parse_module(source).unwrap().into_syntax().body
-    }
+    use crate::test_utils::parse_stmts;
 
     #[test]
     fn detects_name_divergence() {
