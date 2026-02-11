@@ -11,6 +11,7 @@ pub fn generate_function_def(
     source: &str,
     reference_block: &MatchedBlock,
     sig: &FunctionSignature,
+    func_name: &str,
 ) -> String {
     let body_text = &source[reference_block.start_offset..reference_block.end_offset];
 
@@ -36,7 +37,7 @@ pub fn generate_function_def(
 
     // Build the function definition.
     let params_str = sig.params.join(", ");
-    let mut func = format!("def extracted_func_0({params_str}):\n{body}\n");
+    let mut func = format!("def {func_name}({params_str}):\n{body}\n");
 
     // Add return statement if there are outputs.
     if !sig.returns.is_empty() {
@@ -50,10 +51,10 @@ pub fn generate_function_def(
 /// Generate the replacement call for a matched block.
 ///
 /// `block_index` selects which block's variable mapping to use.
-pub fn generate_call(sig: &FunctionSignature, block_index: usize) -> String {
+pub fn generate_call(sig: &FunctionSignature, block_index: usize, func_name: &str) -> String {
     let args: &[String] = &sig.block_arg_maps[block_index];
     let args_str = args.join(", ");
-    let call = format!("extracted_func_0({args_str})");
+    let call = format!("{func_name}({args_str})");
 
     if sig.returns.is_empty() {
         call
@@ -64,18 +65,30 @@ pub fn generate_call(sig: &FunctionSignature, block_index: usize) -> String {
     }
 }
 
-/// Apply the refactoring: replace all matched blocks with function calls,
+/// Apply the refactoring: replace matched blocks with function calls,
 /// and prepend the function definition. Returns the new source text.
-pub fn apply_refactoring(source: &str, blocks: &[MatchedBlock], sig: &FunctionSignature) -> String {
-    let func_def = generate_function_def(source, &blocks[0], sig);
+///
+/// If `selected` is `Some`, only replace the blocks at those 1-based indices.
+/// The function definition is always generated from block 0 (the reference).
+pub fn apply_refactoring(
+    source: &str,
+    blocks: &[MatchedBlock],
+    sig: &FunctionSignature,
+    func_name: &str,
+    selected: Option<&[usize]>,
+) -> String {
+    let func_def = generate_function_def(source, &blocks[0], sig, func_name);
 
     // Build edits sorted by offset (descending so we can apply from end to start).
     let mut edits: Vec<(usize, usize, String)> = blocks
         .iter()
         .enumerate()
+        .filter(|(i, _)| {
+            selected.is_none_or(|sel| sel.contains(&(i + 1))) // 1-based indices
+        })
         .map(|(i, block)| {
             let indent = detect_indent(&source[block.start_offset..block.end_offset]);
-            let call = generate_call(sig, i);
+            let call = generate_call(sig, i, func_name);
             let replacement = format!("{indent}{call}\n");
             (block.start_offset, block.end_offset, replacement)
         })
@@ -194,7 +207,7 @@ mod tests {
     #[test]
     fn generate_call_no_returns() {
         let sig = make_sig(&["arg_0", "arg_1"], &[], &[&["x", "y"]], &[&[]]);
-        let call = generate_call(&sig, 0);
+        let call = generate_call(&sig, 0, "extracted_func_0");
         assert_eq!(call, "extracted_func_0(x, y)");
     }
 
@@ -206,8 +219,21 @@ mod tests {
             &[&["x"], &["a"]],
             &[&["result"], &["output"]],
         );
-        assert_eq!(generate_call(&sig, 0), "result = extracted_func_0(x)");
-        assert_eq!(generate_call(&sig, 1), "output = extracted_func_0(a)");
+        assert_eq!(
+            generate_call(&sig, 0, "extracted_func_0"),
+            "result = extracted_func_0(x)"
+        );
+        assert_eq!(
+            generate_call(&sig, 1, "extracted_func_0"),
+            "output = extracted_func_0(a)"
+        );
+    }
+
+    #[test]
+    fn generate_call_custom_name() {
+        let sig = make_sig(&["x", "y"], &[], &[&["a", "b"]], &[&[]]);
+        let call = generate_call(&sig, 0, "compute");
+        assert_eq!(call, "compute(a, b)");
     }
 
     #[test]

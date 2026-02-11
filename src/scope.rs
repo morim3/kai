@@ -31,12 +31,15 @@ pub fn analyze_block(block: &[Stmt], after_block: &[Stmt]) -> BlockInterface {
     for stmt in after_block {
         after_collector.visit_stmt(stmt);
     }
-    let after_loads = after_collector.all_loads();
+    // Only variables that are loaded *before* being stored in the after-block
+    // are truly live-out. Using inputs() (not all_loads()) avoids false positives
+    // when the after-block overwrites a variable before reading it.
+    let after_inputs = after_collector.inputs();
 
     let outputs: Vec<String> = collector
         .stores()
         .into_iter()
-        .filter(|name| after_loads.contains(name))
+        .filter(|name| after_inputs.contains(name))
         .collect();
 
     BlockInterface { inputs, outputs }
@@ -64,6 +67,7 @@ pub struct FunctionSignature {
 pub fn unify_signatures(
     blocks: &[(&[Stmt], &[Stmt])],
     all_divergences: &[Vec<crate::diff_extract::Divergence>],
+    custom_params: &Option<Vec<String>>,
 ) -> FunctionSignature {
     let interfaces: Vec<BlockInterface> = blocks
         .iter()
@@ -72,7 +76,6 @@ pub fn unify_signatures(
 
     // All blocks should have the same number of inputs/outputs (structurally identical).
     let param_count = interfaces.first().map_or(0, |i| i.inputs.len());
-    let return_count = interfaces.first().map_or(0, |i| i.outputs.len());
 
     // Collect literal divergences as additional parameters.
     // Each literal divergence adds a param; we use the values from each block as args.
@@ -111,8 +114,32 @@ pub fn unify_signatures(
     let lit_count = literal_param_values.len();
     let total_params = param_count + lit_count;
 
-    let params: Vec<String> = (0..total_params).map(|i| format!("arg_{i}")).collect();
-    let returns: Vec<String> = (0..return_count).map(|i| format!("ret_{i}")).collect();
+    let params: Vec<String> = if let Some(names) = custom_params {
+        (0..total_params)
+            .map(|i| names.get(i).cloned().unwrap_or_else(|| format!("arg_{i}")))
+            .collect()
+    } else {
+        (0..total_params).map(|i| format!("arg_{i}")).collect()
+    };
+
+    // For outputs that are also inputs, reuse the corresponding arg_N name
+    // instead of introducing a separate ret_N. This avoids double-renaming
+    // conflicts in generate_function_def().
+    let ref_iface = &interfaces[0];
+    let mut ret_counter = 0;
+    let returns: Vec<String> = ref_iface
+        .outputs
+        .iter()
+        .map(|out_var| {
+            if let Some(input_idx) = ref_iface.inputs.iter().position(|inp| inp == out_var) {
+                format!("arg_{input_idx}")
+            } else {
+                let name = format!("ret_{ret_counter}");
+                ret_counter += 1;
+                name
+            }
+        })
+        .collect();
 
     let num_blocks = blocks.len();
     let mut block_arg_maps: Vec<Vec<String>> = Vec::with_capacity(num_blocks);
@@ -186,17 +213,6 @@ impl VarCollector {
         let mut result = Vec::new();
         for (name, action) in &self.events {
             if *action == VarAction::Store && !result.contains(name) {
-                result.push(name.clone());
-            }
-        }
-        result
-    }
-
-    /// All variables that are loaded in this block.
-    fn all_loads(&self) -> Vec<String> {
-        let mut result = Vec::new();
-        for (name, action) in &self.events {
-            if *action == VarAction::Load && !result.contains(name) {
                 result.push(name.clone());
             }
         }
@@ -331,12 +347,39 @@ mod tests {
                 (block_b.as_slice(), after_b.as_slice()),
             ],
             &[divs],
+            &None,
         );
 
         assert_eq!(sig.params, vec!["arg_0", "arg_1"]);
         assert_eq!(sig.returns, vec!["ret_0"]);
         assert_eq!(sig.block_arg_maps, vec![vec!["a", "b"], vec!["x", "y"]]);
         assert_eq!(sig.block_return_maps, vec![vec!["c"], vec!["z"]]);
+    }
+
+    #[test]
+    fn unify_with_custom_params() {
+        let block_a = parse_stmts("c = a + b");
+        let block_b = parse_stmts("z = x + y");
+        let after_a = parse_stmts("print(c)");
+        let after_b = parse_stmts("print(z)");
+
+        let src_a = "c = a + b";
+        let src_b = "z = x + y";
+        let divs = crate::diff_extract::extract_divergences(&block_a, &block_b, src_a, src_b);
+
+        let custom = Some(vec!["lhs".to_string(), "rhs".to_string()]);
+        let sig = unify_signatures(
+            &[
+                (block_a.as_slice(), after_a.as_slice()),
+                (block_b.as_slice(), after_b.as_slice()),
+            ],
+            &[divs],
+            &custom,
+        );
+
+        assert_eq!(sig.params, vec!["lhs", "rhs"]);
+        // Returns still use auto-generated names
+        assert_eq!(sig.returns, vec!["ret_0"]);
     }
 
     #[test]

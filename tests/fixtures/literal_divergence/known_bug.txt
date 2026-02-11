@@ -1,3 +1,0 @@
-Second block's call is missing the assignment target: ` = extracted_func_0(100, 20)`.
-Variable `x` is incorrectly treated as both an output (ret_0) and used in the body,
-causing the replacement to break.

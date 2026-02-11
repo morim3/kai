@@ -1,6 +1,6 @@
 def extracted_func_0(arg_0, arg_1):
-    ret_0 = arg_1
-    arg_0 = arg_0 + ret_0
+    x = arg_1
+    arg_0 = arg_0 + x
     return arg_0
 
 # pym: 3-4

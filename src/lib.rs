@@ -7,10 +7,32 @@ pub mod scope;
 use anyhow::{Result, bail};
 use ruff_text_size::Ranged;
 
+/// Options for customizing the extract-method refactoring.
+#[derive(Debug, Clone, Default)]
+pub struct ExtractOptions {
+    /// Custom function name (default: `extracted_func_0`).
+    pub func_name: Option<String>,
+    /// Custom parameter names (default: `arg_0`, `arg_1`, ...).
+    pub param_names: Option<Vec<String>>,
+    /// Select which matched blocks to replace (1-based indices).
+    /// If `None`, all blocks are replaced.
+    pub select: Option<Vec<usize>>,
+}
+
 /// Run the full extract-method pipeline on `source`, targeting `start_line..=end_line`.
 ///
 /// Returns the refactored source code on success.
 pub fn extract_method(source: &str, start_line: usize, end_line: usize) -> Result<String> {
+    extract_method_with_options(source, start_line, end_line, &ExtractOptions::default())
+}
+
+/// Run the full extract-method pipeline with custom options.
+pub fn extract_method_with_options(
+    source: &str,
+    start_line: usize,
+    end_line: usize,
+    options: &ExtractOptions,
+) -> Result<String> {
     let blocks = scan::find_matches(source, start_line, end_line)?;
     if blocks.len() < 2 {
         bail!(
@@ -52,6 +74,13 @@ pub fn extract_method(source: &str, start_line: usize, end_line: usize) -> Resul
         }
     }
 
-    let sig = scope::unify_signatures(&sig_inputs, &all_divs);
-    Ok(rewrite::apply_refactoring(source, &blocks, &sig))
+    let sig = scope::unify_signatures(&sig_inputs, &all_divs, &options.param_names);
+    let func_name = options.func_name.as_deref().unwrap_or("extracted_func_0");
+    Ok(rewrite::apply_refactoring(
+        source,
+        &blocks,
+        &sig,
+        func_name,
+        options.select.as_deref(),
+    ))
 }

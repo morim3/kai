@@ -7,4 +7,5 @@ while true; do
     claude --dangerously-skip-permissions \
            -p "$(cat CLAUDE.md)" \
            --model claude-opus-4-6 2>&1 | tee "$LOGFILE"
+    echo "New session"
 done
