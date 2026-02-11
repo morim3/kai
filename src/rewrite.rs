@@ -34,17 +34,7 @@ pub fn generate_function_def(
     let full_body_text = format!("{original_indent}{body_text}");
 
     // Build rename map from original names → param/return names.
-    let mut rename_map: HashMap<&str, &str> = HashMap::new();
-    if let Some(arg_map) = sig.block_arg_maps.first() {
-        for (i, original_name) in arg_map.iter().enumerate() {
-            rename_map.insert(original_name, &sig.params[i]);
-        }
-    }
-    if let Some(ret_map) = sig.block_return_maps.first() {
-        for (i, original_name) in ret_map.iter().enumerate() {
-            rename_map.insert(original_name, &sig.returns[i]);
-        }
-    }
+    let rename_map = sig.rename_map();
 
     // Use pre-collected AST node positions for precise replacement (avoids
     // false matches in string literals and comments).

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ruff_python_ast::visitor::{Visitor, walk_expr, walk_stmt};
 use ruff_python_ast::{Expr, ExprContext, Stmt};
 use ruff_python_stdlib::builtins::is_python_builtin;
@@ -11,6 +13,16 @@ const DEFAULT_PY_MINOR: u8 = 12;
 /// Check if a name is a Python builtin that should be excluded from parameters.
 fn is_builtin(name: &str) -> bool {
     is_python_builtin(name, DEFAULT_PY_MINOR, false)
+}
+
+/// Default name for the i-th parameter (e.g. `arg_0`, `arg_1`).
+pub fn default_param_name(i: usize) -> String {
+    format!("arg_{i}")
+}
+
+/// Default name for the i-th return value (e.g. `ret_0`, `ret_1`).
+pub fn default_return_name(i: usize) -> String {
+    format!("ret_{i}")
 }
 
 /// The interface of an extracted function block.
@@ -78,6 +90,27 @@ pub struct FunctionSignature {
     pub block_return_maps: Vec<Vec<String>>,
 }
 
+impl FunctionSignature {
+    /// Build the rename map for block 0: original name/literal → new param/return name.
+    ///
+    /// Entries from `block_arg_maps[0]` map to `params`, then `block_return_maps[0]`
+    /// map to `returns` (returns override params for output=input variables).
+    pub fn rename_map(&self) -> HashMap<&str, &str> {
+        let mut map = HashMap::new();
+        if let Some(arg_map) = self.block_arg_maps.first() {
+            for (i, original) in arg_map.iter().enumerate() {
+                map.insert(original.as_str(), self.params[i].as_str());
+            }
+        }
+        if let Some(ret_map) = self.block_return_maps.first() {
+            for (i, original) in ret_map.iter().enumerate() {
+                map.insert(original.as_str(), self.returns[i].as_str());
+            }
+        }
+        map
+    }
+}
+
 /// Collect literal divergences across all blocks into a table of per-parameter values.
 ///
 /// `all_divergences[i]` contains divergences between block 0 and block `i+1`.
@@ -142,7 +175,7 @@ pub fn unify_signatures(
     let lit_count = literal_param_values.len();
     let total_params = param_count + lit_count;
 
-    let params: Vec<String> = (0..total_params).map(|i| format!("arg_{i}")).collect();
+    let params: Vec<String> = (0..total_params).map(default_param_name).collect();
 
     // For outputs that are also inputs, reuse the corresponding arg_N name
     // instead of introducing a separate ret_N. This avoids double-renaming
@@ -154,9 +187,9 @@ pub fn unify_signatures(
         .iter()
         .map(|out_var| {
             if let Some(input_idx) = ref_iface.inputs.iter().position(|inp| inp == out_var) {
-                format!("arg_{input_idx}")
+                default_param_name(input_idx)
             } else {
-                let name = format!("ret_{ret_counter}");
+                let name = default_return_name(ret_counter);
                 ret_counter += 1;
                 name
             }
