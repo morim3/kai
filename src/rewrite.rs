@@ -68,14 +68,12 @@ pub fn generate_call(sig: &FunctionSignature, block_index: usize, func_name: &st
 /// Apply the refactoring: replace matched blocks with function calls,
 /// and prepend the function definition. Returns the new source text.
 ///
-/// If `selected` is `Some`, only replace the blocks at those 1-based indices.
 /// The function definition is always generated from block 0 (the reference).
 pub fn apply_refactoring(
     source: &str,
     blocks: &[MatchedBlock],
     sig: &FunctionSignature,
     func_name: &str,
-    selected: Option<&[usize]>,
 ) -> String {
     let func_def = generate_function_def(source, &blocks[0], sig, func_name);
 
@@ -83,9 +81,6 @@ pub fn apply_refactoring(
     let mut edits: Vec<(usize, usize, String)> = blocks
         .iter()
         .enumerate()
-        .filter(|(i, _)| {
-            selected.is_none_or(|sel| sel.contains(&(i + 1))) // 1-based indices
-        })
         .map(|(i, block)| {
             let indent = detect_indent(&source[block.start_offset..block.end_offset]);
             let call = generate_call(sig, i, func_name);

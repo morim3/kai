@@ -26,11 +26,6 @@ use ruff_text_size::Ranged;
 pub struct ExtractOptions {
     /// Custom function name (default: `extracted_func_0`).
     pub func_name: Option<String>,
-    /// Custom parameter names (default: `arg_0`, `arg_1`, ...).
-    pub param_names: Option<Vec<String>>,
-    /// Select which matched blocks to replace (1-based indices).
-    /// If `None`, all blocks are replaced.
-    pub select: Option<Vec<usize>>,
 }
 
 /// Run the full extract-method pipeline on `source`, targeting `start_line..=end_line`.
@@ -88,13 +83,7 @@ pub fn extract_method_with_options(
         }
     }
 
-    let sig = scope::unify_signatures(&sig_inputs, &all_divs, options.param_names.as_deref());
+    let sig = scope::unify_signatures(&sig_inputs, &all_divs);
     let func_name = options.func_name.as_deref().unwrap_or("extracted_func_0");
-    Ok(rewrite::apply_refactoring(
-        source,
-        &blocks,
-        &sig,
-        func_name,
-        options.select.as_deref(),
-    ))
+    Ok(rewrite::apply_refactoring(source, &blocks, &sig, func_name))
 }

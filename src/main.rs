@@ -24,39 +24,14 @@ struct Cli {
     /// Custom name for the extracted function (default: extracted_func_0)
     #[arg(long)]
     name: Option<String>,
-
-    /// Custom parameter names (comma-separated, e.g. "a, b, c")
-    #[arg(long)]
-    args: Option<String>,
-
-    /// Select which matched blocks to replace (comma-separated 1-based indices, e.g. "1,3")
-    #[arg(long)]
-    select: Option<String>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let source = std::fs::read_to_string(&cli.file)?;
 
-    let select = cli
-        .select
-        .map(|s| {
-            s.split(',')
-                .map(|p| {
-                    p.trim()
-                        .parse::<usize>()
-                        .map_err(|_| anyhow::anyhow!("invalid block index: {:?}", p.trim()))
-                })
-                .collect::<Result<Vec<_>>>()
-        })
-        .transpose()?;
-
     let options = pym::ExtractOptions {
         func_name: cli.name,
-        param_names: cli
-            .args
-            .map(|s| s.split(',').map(|p| p.trim().to_string()).collect()),
-        select,
     };
 
     let result = pym::extract_method_with_options(&source, cli.start_line, cli.end_line, &options)?;

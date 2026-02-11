@@ -4,6 +4,86 @@ use rustc_hash::FxHashSet;
 
 use crate::diff_extract::Divergence;
 
+/// Python 3 built-in function and type names.
+/// These are excluded from scope analysis inputs so they don't become function parameters.
+const PYTHON_BUILTINS: &[&str] = &[
+    "abs",
+    "aiter",
+    "all",
+    "anext",
+    "any",
+    "ascii",
+    "bin",
+    "bool",
+    "breakpoint",
+    "bytearray",
+    "bytes",
+    "callable",
+    "chr",
+    "classmethod",
+    "compile",
+    "complex",
+    "delattr",
+    "dict",
+    "dir",
+    "divmod",
+    "enumerate",
+    "eval",
+    "exec",
+    "filter",
+    "float",
+    "format",
+    "frozenset",
+    "getattr",
+    "globals",
+    "hasattr",
+    "hash",
+    "help",
+    "hex",
+    "id",
+    "input",
+    "int",
+    "isinstance",
+    "issubclass",
+    "iter",
+    "len",
+    "list",
+    "locals",
+    "map",
+    "max",
+    "memoryview",
+    "min",
+    "next",
+    "object",
+    "oct",
+    "open",
+    "ord",
+    "pow",
+    "print",
+    "property",
+    "range",
+    "repr",
+    "reversed",
+    "round",
+    "set",
+    "setattr",
+    "slice",
+    "sorted",
+    "staticmethod",
+    "str",
+    "sum",
+    "super",
+    "tuple",
+    "type",
+    "vars",
+    "zip",
+    "__import__",
+];
+
+fn is_python_builtin(name: &str) -> bool {
+    PYTHON_BUILTINS.contains(&name)
+}
+
 /// The interface of an extracted function block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockInterface {
@@ -112,7 +192,6 @@ fn collect_literal_params(all_divergences: &[Vec<Divergence>]) -> Vec<Vec<String
 pub fn unify_signatures(
     blocks: &[(&[Stmt], &[Stmt])],
     all_divergences: &[Vec<Divergence>],
-    custom_params: Option<&[String]>,
 ) -> FunctionSignature {
     let interfaces: Vec<BlockInterface> = blocks
         .iter()
@@ -127,13 +206,7 @@ pub fn unify_signatures(
     let lit_count = literal_param_values.len();
     let total_params = param_count + lit_count;
 
-    let params: Vec<String> = if let Some(names) = custom_params {
-        (0..total_params)
-            .map(|i| names.get(i).cloned().unwrap_or_else(|| format!("arg_{i}")))
-            .collect()
-    } else {
-        (0..total_params).map(|i| format!("arg_{i}")).collect()
-    };
+    let params: Vec<String> = (0..total_params).map(|i| format!("arg_{i}")).collect();
 
     // For outputs that are also inputs, reuse the corresponding arg_N name
     // instead of introducing a separate ret_N. This avoids double-renaming
@@ -211,7 +284,10 @@ impl VarCollector {
                     stored_set.insert(name.as_str());
                 }
                 VarAction::Load => {
-                    if !stored_set.contains(name.as_str()) && input_set.insert(name.as_str()) {
+                    if !stored_set.contains(name.as_str())
+                        && !is_python_builtin(name)
+                        && input_set.insert(name.as_str())
+                    {
                         inputs.push(name.clone());
                     }
                 }
@@ -355,39 +431,12 @@ mod tests {
                 (block_b.as_slice(), after_b.as_slice()),
             ],
             &[divs],
-            None,
         );
 
         assert_eq!(sig.params, vec!["arg_0", "arg_1"]);
         assert_eq!(sig.returns, vec!["ret_0"]);
         assert_eq!(sig.block_arg_maps, vec![vec!["a", "b"], vec!["x", "y"]]);
         assert_eq!(sig.block_return_maps, vec![vec!["c"], vec!["z"]]);
-    }
-
-    #[test]
-    fn unify_with_custom_params() {
-        let block_a = parse_stmts("c = a + b");
-        let block_b = parse_stmts("z = x + y");
-        let after_a = parse_stmts("print(c)");
-        let after_b = parse_stmts("print(z)");
-
-        let src_a = "c = a + b";
-        let src_b = "z = x + y";
-        let divs = crate::diff_extract::extract_divergences(&block_a, &block_b, src_a, src_b);
-
-        let custom = vec!["lhs".to_string(), "rhs".to_string()];
-        let sig = unify_signatures(
-            &[
-                (block_a.as_slice(), after_a.as_slice()),
-                (block_b.as_slice(), after_b.as_slice()),
-            ],
-            &[divs],
-            Some(&custom),
-        );
-
-        assert_eq!(sig.params, vec!["lhs", "rhs"]);
-        // Returns still use auto-generated names
-        assert_eq!(sig.returns, vec!["ret_0"]);
     }
 
     #[test]
@@ -424,7 +473,6 @@ mod tests {
                 (block_c.as_slice(), &[]),
             ],
             &[divs_ab, divs_ac],
-            None,
         );
 
         // 2 literal divergences become 2 params (no variable inputs)

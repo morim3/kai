@@ -1,2 +1,1 @@
 func_name = "compute"
-param_names = ["x", "y"]
