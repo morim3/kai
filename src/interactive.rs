@@ -193,7 +193,7 @@ fn rename_parameters(sig: &mut FunctionSignature) -> Result<()> {
     rename_collection(
         &mut sig.params,
         &sig.block_arg_maps,
-        &sig.returns,
+        &[],
         "Parameters (per-block values)",
         "parameter",
     )
@@ -204,7 +204,7 @@ fn rename_returns(sig: &mut FunctionSignature) -> Result<()> {
     rename_collection(
         &mut sig.returns,
         &sig.block_return_maps,
-        &sig.params,
+        &[],
         "Returns (per-block names)",
         "return value",
     )
@@ -285,11 +285,8 @@ fn add_returns(
         }
     }
 
-    // Rename newly added returns (reserved = existing params + existing returns).
-    let reserved: Vec<String> = sig.params.iter()
-        .chain(sig.returns[..ret_count].iter())
-        .cloned()
-        .collect();
+    // Rename newly added returns (reserved = existing returns only).
+    let reserved: Vec<String> = sig.returns[..ret_count].to_vec();
     let new_returns = &mut sig.returns[ret_count..];
     let new_maps: Vec<Vec<String>> = sig
         .block_return_maps
