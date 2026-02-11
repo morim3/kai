@@ -3,7 +3,9 @@ use ruff_python_ast::Stmt;
 use ruff_python_parser::parse_module;
 use ruff_text_size::Ranged;
 
-use crate::normalize::{hash_stmt_refs, hash_stmts, line_of_offset, select_stmts};
+use crate::normalize::{
+    hash_stmt_refs, hash_stmts, indent_at_offset, line_of_offset, select_stmts,
+};
 
 /// The kind of scope that contains matched blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,20 +29,24 @@ pub struct ScopeContext {
     pub parent_indent: Option<String>,
 }
 
-/// Find the innermost scope body containing the given line range.
-///
-/// Recursively drills into `FunctionDef` (including async) and `ClassDef`
-/// to find the deepest body that fully contains `target_start..=target_end`.
-///
-/// Returns the body slice and a `ScopeContext` describing the scope.
-pub fn find_innermost_body<'a>(
-    body: &'a [Stmt],
+/// Result of a scope traversal: the innermost body/context and optionally the parent.
+pub struct ScopeInfo<'a> {
+    pub inner_body: &'a [Stmt],
+    pub inner_ctx: ScopeContext,
+    /// The body one level above the innermost (None if innermost == top level).
+    pub parent: Option<(&'a [Stmt], ScopeContext)>,
+}
+
+/// Traverse the AST to find both the innermost scope body containing the target
+/// and the parent scope (one level up). A single traversal produces both results.
+pub fn find_scopes<'a>(
+    top_body: &'a [Stmt],
     source: &str,
     target_start: usize,
     target_end: usize,
-) -> (&'a [Stmt], ScopeContext) {
-    find_innermost_body_inner(
-        body,
+) -> ScopeInfo<'a> {
+    find_scopes_inner(
+        top_body,
         source,
         target_start,
         target_end,
@@ -50,65 +56,77 @@ pub fn find_innermost_body<'a>(
     )
 }
 
-fn find_innermost_body_inner<'a>(
+fn find_scopes_inner<'a>(
     body: &'a [Stmt],
     source: &str,
     target_start: usize,
     target_end: usize,
     current_kind: ScopeKind,
-    // For Class scope: offset and indent of the parent scope.
     class_def_offset: Option<usize>,
     parent_indent: Option<String>,
-) -> (&'a [Stmt], ScopeContext) {
+) -> ScopeInfo<'a> {
     for stmt in body {
         let range = stmt.range();
         let stmt_start = line_of_offset(source, range.start().to_usize());
         let stmt_end = line_of_offset(source, range.end().to_usize().saturating_sub(1));
 
         if stmt_start <= target_start && stmt_end >= target_end {
-            match stmt {
-                Stmt::FunctionDef(f) => {
-                    return find_innermost_body_inner(
-                        &f.body,
+            let child = match stmt {
+                Stmt::FunctionDef(f) => Some((f.body.as_slice(), ScopeKind::Function, None, None)),
+                Stmt::ClassDef(c) => Some((
+                    c.body.as_slice(),
+                    ScopeKind::Class,
+                    Some(range.start().to_usize()),
+                    body.first()
+                        .map(|s| indent_at_offset(source, s.range().start().to_usize())),
+                )),
+                _ => None,
+            };
+
+            if let Some((child_body, child_kind, child_class_offset, child_parent_indent)) = child {
+                let mut info = find_scopes_inner(
+                    child_body,
+                    source,
+                    target_start,
+                    target_end,
+                    child_kind,
+                    child_class_offset,
+                    child_parent_indent,
+                );
+                // If no parent was found deeper, the current body is the parent.
+                if info.parent.is_none() {
+                    let ctx = make_scope_context(
+                        body,
                         source,
-                        target_start,
-                        target_end,
-                        ScopeKind::Function,
-                        None,
-                        None,
+                        current_kind,
+                        class_def_offset,
+                        parent_indent,
                     );
+                    info.parent = Some((body, ctx));
                 }
-                Stmt::ClassDef(c) => {
-                    // Compute the parent indent from the current body.
-                    let current_indent = compute_indent(body, source);
-                    return find_innermost_body_inner(
-                        &c.body,
-                        source,
-                        target_start,
-                        target_end,
-                        ScopeKind::Class,
-                        Some(range.start().to_usize()),
-                        Some(current_indent),
-                    );
-                }
-                _ => {}
+                return info;
             }
         }
     }
 
+    // Base case: target is directly in this body.
     let ctx = make_scope_context(body, source, current_kind, class_def_offset, parent_indent);
-    (body, ctx)
+    ScopeInfo {
+        inner_body: body,
+        inner_ctx: ctx,
+        parent: None,
+    }
 }
 
-/// Compute the indentation of the first statement in a body.
-fn compute_indent(body: &[Stmt], source: &str) -> String {
-    if let Some(first) = body.first() {
-        let offset = first.range().start().to_usize();
-        let line_start = source[..offset].rfind('\n').map_or(0, |p| p + 1);
-        source[line_start..offset].to_string()
-    } else {
-        String::new()
-    }
+/// Convenience wrapper: returns only the innermost body and its scope context.
+pub fn find_innermost_body<'a>(
+    body: &'a [Stmt],
+    source: &str,
+    target_start: usize,
+    target_end: usize,
+) -> (&'a [Stmt], ScopeContext) {
+    let info = find_scopes(body, source, target_start, target_end);
+    (info.inner_body, info.inner_ctx)
 }
 
 /// Build a `ScopeContext` from a body and its scope metadata.
@@ -121,8 +139,7 @@ fn make_scope_context(
 ) -> ScopeContext {
     let (body_start_offset, indent) = if let Some(first) = body.first() {
         let offset = first.range().start().to_usize();
-        let line_start = source[..offset].rfind('\n').map_or(0, |p| p + 1);
-        (offset, source[line_start..offset].to_string())
+        (offset, indent_at_offset(source, offset))
     } else {
         (0, String::new())
     };
@@ -133,96 +150,6 @@ fn make_scope_context(
         class_def_offset,
         parent_indent,
     }
-}
-
-/// Find the parent body (one level above the innermost body containing the target)
-/// and its `ScopeContext`. Returns `None` if the target is directly at the top level.
-fn find_parent_with_ctx<'a>(
-    body: &'a [Stmt],
-    source: &str,
-    target_start: usize,
-    target_end: usize,
-) -> Option<(&'a [Stmt], ScopeContext)> {
-    find_parent_with_ctx_inner(
-        body,
-        source,
-        target_start,
-        target_end,
-        ScopeKind::Module,
-        None,
-        None,
-    )
-}
-
-fn find_parent_with_ctx_inner<'a>(
-    body: &'a [Stmt],
-    source: &str,
-    target_start: usize,
-    target_end: usize,
-    current_kind: ScopeKind,
-    class_def_offset: Option<usize>,
-    parent_indent: Option<String>,
-) -> Option<(&'a [Stmt], ScopeContext)> {
-    for stmt in body {
-        let range = stmt.range();
-        let stmt_start = line_of_offset(source, range.start().to_usize());
-        let stmt_end = line_of_offset(source, range.end().to_usize().saturating_sub(1));
-
-        if stmt_start <= target_start && stmt_end >= target_end {
-            match stmt {
-                Stmt::FunctionDef(f) => {
-                    // Try to find a deeper parent inside f.body.
-                    let deeper = find_parent_with_ctx_inner(
-                        &f.body,
-                        source,
-                        target_start,
-                        target_end,
-                        ScopeKind::Function,
-                        None,
-                        None,
-                    );
-                    if deeper.is_some() {
-                        return deeper;
-                    }
-                    // Target is directly in f.body → current body is the parent.
-                    let ctx = make_scope_context(
-                        body,
-                        source,
-                        current_kind,
-                        class_def_offset,
-                        parent_indent,
-                    );
-                    return Some((body, ctx));
-                }
-                Stmt::ClassDef(c) => {
-                    let current_indent = compute_indent(body, source);
-                    let deeper = find_parent_with_ctx_inner(
-                        &c.body,
-                        source,
-                        target_start,
-                        target_end,
-                        ScopeKind::Class,
-                        Some(range.start().to_usize()),
-                        Some(current_indent),
-                    );
-                    if deeper.is_some() {
-                        return deeper;
-                    }
-                    let ctx = make_scope_context(
-                        body,
-                        source,
-                        current_kind,
-                        class_def_offset,
-                        parent_indent,
-                    );
-                    return Some((body, ctx));
-                }
-                _ => {}
-            }
-        }
-    }
-    // Target is directly in this body — no parent exists at a higher level.
-    None
 }
 
 /// Check if two body slices are the same (by comparing the start offset of their first statement).
@@ -257,22 +184,20 @@ pub fn find_scope_for_matches(
     target_end: usize,
     matches: &[MatchedBlock],
 ) -> ScopeContext {
-    let (inner_body, inner_ctx) = find_innermost_body(top_body, source, target_start, target_end);
+    let info = find_scopes(top_body, source, target_start, target_end);
 
     let all_in_same_body = matches.iter().all(|m| {
-        inner_body
+        info.inner_body
             .iter()
             .any(|s| s.range().start().to_usize() == m.start_offset)
     });
 
     if all_in_same_body {
-        return inner_ctx;
+        return info.inner_ctx;
     }
 
     // Matches span sibling scopes — use parent scope context.
-    find_parent_with_ctx(top_body, source, target_start, target_end)
-        .map(|(_, ctx)| ctx)
-        .unwrap_or(inner_ctx)
+    info.parent.map(|(_, ctx)| ctx).unwrap_or(info.inner_ctx)
 }
 
 /// A matched block in the source file.
@@ -307,10 +232,10 @@ pub fn find_matches(
 
     let parsed = parse_module(source).map_err(|e| anyhow::anyhow!("Parse error: {e}"))?;
     let top_body = &parsed.syntax().body;
-    let (inner_body, _ctx) = find_innermost_body(top_body, source, target_start, target_end);
+    let scope_info = find_scopes(top_body, source, target_start, target_end);
 
     // Compute target hash from the innermost body.
-    let target_stmts = select_stmts(source, inner_body, target_start, target_end);
+    let target_stmts = select_stmts(source, scope_info.inner_body, target_start, target_end);
     if target_stmts.is_empty() {
         bail!("No statements found in target range {target_start}..={target_end}");
     }
@@ -318,11 +243,10 @@ pub fn find_matches(
     let target_hash = hash_stmt_refs(&target_stmts);
 
     // Scan the innermost body.
-    let mut matches = scan_body_with_hash(source, inner_body, target_hash, window_size);
+    let mut matches = scan_body_with_hash(source, scope_info.inner_body, target_hash, window_size);
 
     // Scan sibling scopes at the parent level.
-    if let Some((parent_body, _)) = find_parent_with_ctx(top_body, source, target_start, target_end)
-    {
+    if let Some((parent_body, _)) = scope_info.parent {
         for stmt in parent_body {
             let child_body: Option<&[Stmt]> = match stmt {
                 Stmt::FunctionDef(f) => Some(&f.body),
@@ -330,7 +254,7 @@ pub fn find_matches(
                 _ => None,
             };
             if let Some(child) = child_body
-                && !same_body(child, inner_body)
+                && !same_body(child, scope_info.inner_body)
             {
                 matches.extend(scan_body_with_hash(source, child, target_hash, window_size));
             }

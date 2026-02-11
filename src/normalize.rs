@@ -69,6 +69,12 @@ pub fn line_of_offset(source: &str, offset: usize) -> usize {
         + 1
 }
 
+/// Get the leading whitespace (indentation) of the line containing `offset`.
+pub fn indent_at_offset(source: &str, offset: usize) -> String {
+    let line_start = source[..offset].rfind('\n').map_or(0, |p| p + 1);
+    source[line_start..offset].to_string()
+}
+
 /// A visitor that walks the AST and produces a structural hash.
 ///
 /// - Variable names (`Expr::Name`) are replaced with positional tags (VAR_0, VAR_1, ...).

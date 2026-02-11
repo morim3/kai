@@ -1,5 +1,6 @@
 use similar::TextDiff;
 
+use crate::normalize::indent_at_offset;
 use crate::scan::{MatchedBlock, ScopeContext, ScopeKind};
 use crate::scope::FunctionSignature;
 
@@ -152,15 +153,6 @@ pub fn unified_diff(original: &str, modified: &str, filename: &str) -> String {
         output.push_str(&format!("{hunk}"));
     }
     output
-}
-
-/// Get the indentation of the line containing the given byte offset.
-///
-/// Unlike `detect_indent`, this works correctly for nested code because
-/// it looks at the full source line, not just the AST byte range.
-fn indent_at_offset(source: &str, offset: usize) -> String {
-    let line_start = source[..offset].rfind('\n').map_or(0, |p| p + 1);
-    source[line_start..offset].to_string()
 }
 
 /// Re-indent a code block from `old_indent` to `new_indent`.
