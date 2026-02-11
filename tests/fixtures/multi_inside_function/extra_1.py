@@ -1,0 +1,3 @@
+def process():
+    x = 100
+    y = x + 200

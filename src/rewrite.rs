@@ -5,6 +5,7 @@ use ruff_python_ast::{Expr, Stmt};
 use ruff_text_size::Ranged;
 use similar::TextDiff;
 
+use crate::SourcedBlock;
 use crate::normalize::indent_at_offset;
 use crate::scan::{MatchedBlock, ScopeContext, ScopeKind};
 use crate::scope::FunctionSignature;
@@ -168,6 +169,164 @@ pub fn unified_diff(original: &str, modified: &str, filename: &str) -> String {
         output.push_str(&format!("{hunk}"));
     }
     output
+}
+
+/// Generate an import statement: `from <module_stem> import <func_name>`.
+pub fn generate_import(module_stem: &str, func_name: &str) -> String {
+    format!("from {module_stem} import {func_name}\n")
+}
+
+/// Find the byte offset where a new import should be inserted.
+///
+/// Inserts after existing imports (the last `import` or `from ... import` line),
+/// or at offset 0 if none exist.
+fn find_import_insert_point(source: &str) -> usize {
+    let mut last_import_end = None;
+    for (offset, line) in line_offsets(source) {
+        let trimmed = line.trim();
+        if trimmed.starts_with("import ") || trimmed.starts_with("from ") {
+            last_import_end = Some(offset + line.len() + 1); // +1 for newline
+        } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
+            // Stop at first non-import, non-comment, non-blank line
+            // (but only if we've seen at least one import or if this is code)
+            if last_import_end.is_some() {
+                break;
+            }
+        }
+    }
+    last_import_end.unwrap_or(0)
+}
+
+/// Iterate over lines with their byte offsets.
+fn line_offsets(source: &str) -> Vec<(usize, &str)> {
+    let mut result = Vec::new();
+    let mut offset = 0;
+    for line in source.lines() {
+        result.push((offset, line));
+        offset += line.len() + 1; // +1 for newline
+    }
+    result
+}
+
+/// Check if an import statement already exists in the source.
+fn has_import(source: &str, module_stem: &str, func_name: &str) -> bool {
+    let import_line = format!("from {module_stem} import {func_name}");
+    source.lines().any(|line| line.trim() == import_line)
+}
+
+/// Apply the multi-file refactoring: returns one modified source per input file.
+///
+/// - `sources[0]` (target): gets the function definition + block replacements.
+/// - `sources[1+]` (extra files): get block replacements + import insertion.
+pub fn apply_refactoring_multi(
+    sources: &[&str],
+    blocks: &[SourcedBlock],
+    ref_node_positions: &[(usize, usize)],
+    sig: &FunctionSignature,
+    func_name: &str,
+    scope: &ScopeContext,
+    target_file_stem: &str,
+) -> Vec<String> {
+    // Group blocks by source_index while preserving their position in the
+    // original `blocks` slice (needed for block_arg_maps indexing).
+    let mut per_file: Vec<Vec<(usize, &MatchedBlock)>> = vec![Vec::new(); sources.len()];
+    for (block_idx, sourced) in blocks.iter().enumerate() {
+        per_file[sourced.source_index].push((block_idx, &sourced.block));
+    }
+
+    let mut results = Vec::with_capacity(sources.len());
+
+    for (file_idx, file_blocks) in per_file.iter().enumerate() {
+        let source = sources[file_idx];
+
+        if file_blocks.is_empty() {
+            // No matches in this file — return unchanged.
+            results.push(source.to_string());
+            continue;
+        }
+
+        if file_idx == 0 {
+            // Target file: use existing apply_refactoring.
+            let plain_blocks: Vec<MatchedBlock> =
+                file_blocks.iter().map(|(_, b)| (*b).clone()).collect();
+            // We need to use the block_indices to construct proper sig for this file.
+            // Since apply_refactoring uses sequential indexing, we need to create a
+            // re-indexed signature for just this file's blocks.
+            let file_sig = remap_signature(
+                sig,
+                &file_blocks.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+            );
+            results.push(apply_refactoring(
+                source,
+                &plain_blocks,
+                ref_node_positions,
+                &file_sig,
+                func_name,
+                scope,
+            ));
+        } else {
+            // Extra file: replace blocks with calls + add import.
+            let mut result = replace_blocks_with_calls(source, file_blocks, sig, func_name);
+
+            // Add import if not already present.
+            if !has_import(&result, target_file_stem, func_name) {
+                let import_stmt = generate_import(target_file_stem, func_name);
+                let insert_point = find_import_insert_point(&result);
+                result.insert_str(insert_point, &import_stmt);
+            }
+
+            results.push(result);
+        }
+    }
+
+    results
+}
+
+/// Replace matched blocks in a source file with function calls.
+///
+/// Used for non-target files in multi-file refactoring.
+fn replace_blocks_with_calls(
+    source: &str,
+    blocks: &[(usize, &MatchedBlock)],
+    sig: &FunctionSignature,
+    func_name: &str,
+) -> String {
+    let mut edits: Vec<(usize, usize, String)> = blocks
+        .iter()
+        .map(|(block_idx, block)| {
+            let indent = indent_at_offset(source, block.start_offset);
+            let call = generate_call(sig, *block_idx, func_name);
+            let replacement = format!("{indent}{call}\n");
+            (block.start_offset, block.end_offset, replacement)
+        })
+        .collect();
+
+    edits.sort_by(|a, b| b.0.cmp(&a.0));
+
+    let mut result = source.to_string();
+    for (start, end, replacement) in &edits {
+        let line_start = source[..*start].rfind('\n').map_or(0, |p| p + 1);
+        let line_end = source[*end..].find('\n').map_or(*end, |p| *end + p + 1);
+        result.replace_range(line_start..line_end, replacement);
+    }
+    result
+}
+
+/// Create a new FunctionSignature with block_arg_maps/block_return_maps
+/// re-indexed to only include the given block indices (in order).
+fn remap_signature(sig: &FunctionSignature, block_indices: &[usize]) -> FunctionSignature {
+    FunctionSignature {
+        params: sig.params.clone(),
+        returns: sig.returns.clone(),
+        block_arg_maps: block_indices
+            .iter()
+            .map(|&i| sig.block_arg_maps[i].clone())
+            .collect(),
+        block_return_maps: block_indices
+            .iter()
+            .map(|&i| sig.block_return_maps[i].clone())
+            .collect(),
+    }
 }
 
 /// Re-indent a code block from `old_indent` to `new_indent`.
@@ -341,5 +500,35 @@ mod tests {
         let text = "    x = 1\n    y = 2";
         let result = reindent(text, "    ", "        ");
         assert_eq!(result, "        x = 1\n        y = 2");
+    }
+
+    #[test]
+    fn generate_import_format() {
+        assert_eq!(
+            generate_import("utils", "compute"),
+            "from utils import compute\n"
+        );
+    }
+
+    #[test]
+    fn find_import_insert_point_after_imports() {
+        let source = "import os\nfrom sys import argv\n\nx = 1\n";
+        let point = find_import_insert_point(source);
+        // Should be after "from sys import argv\n"
+        assert_eq!(point, "import os\nfrom sys import argv\n".len());
+    }
+
+    #[test]
+    fn find_import_insert_point_no_imports() {
+        let source = "x = 1\ny = 2\n";
+        let point = find_import_insert_point(source);
+        assert_eq!(point, 0);
+    }
+
+    #[test]
+    fn has_import_detects_existing() {
+        let source = "from utils import compute\nx = 1\n";
+        assert!(has_import(source, "utils", "compute"));
+        assert!(!has_import(source, "utils", "other_func"));
     }
 }

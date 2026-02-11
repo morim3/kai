@@ -212,19 +212,16 @@ pub struct MatchedBlock {
     pub end_offset: usize,
 }
 
-/// Scan the file for statement blocks that structurally match
-/// the target block (identified by `target_start..=target_end` lines).
+/// Scan the target file for blocks matching the target range, returning the hash and window size.
 ///
-/// Automatically finds the innermost scope (function/class) containing
-/// the target and scans within that scope's body. Also scans sibling
-/// scopes (other functions/classes at the same parent level) for matches.
-///
-/// Returns the list of all matching blocks, **including** the target itself.
-pub fn find_matches(
+/// This is the first stage of the multi-file pipeline: it computes the structural hash
+/// of the target block, scans the target file, and returns all the information needed
+/// to scan additional files.
+pub fn find_matches_with_hash(
     source: &str,
     target_start: usize,
     target_end: usize,
-) -> Result<Vec<MatchedBlock>> {
+) -> Result<(u64, usize, Vec<MatchedBlock>)> {
     if target_start == 0 || target_end == 0 || target_start > target_end {
         bail!("Invalid line range: {target_start}..={target_end}");
     }
@@ -260,7 +257,68 @@ pub fn find_matches(
         }
     }
 
+    Ok((target_hash, window_size, matches))
+}
+
+/// Scan the file for statement blocks that structurally match
+/// the target block (identified by `target_start..=target_end` lines).
+///
+/// Automatically finds the innermost scope (function/class) containing
+/// the target and scans within that scope's body. Also scans sibling
+/// scopes (other functions/classes at the same parent level) for matches.
+///
+/// Returns the list of all matching blocks, **including** the target itself.
+pub fn find_matches(
+    source: &str,
+    target_start: usize,
+    target_end: usize,
+) -> Result<Vec<MatchedBlock>> {
+    let (_, _, matches) = find_matches_with_hash(source, target_start, target_end)?;
     Ok(matches)
+}
+
+/// Scan an arbitrary source file for blocks matching a known structural hash.
+///
+/// Recursively traverses all scopes (module, functions, classes) in the source.
+/// Used to find matches in files other than the target file.
+pub fn find_matches_in_file(
+    source: &str,
+    target_hash: u64,
+    window_size: usize,
+) -> Vec<MatchedBlock> {
+    let parsed = match crate::parse_python(source) {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let top_body = &parsed.syntax().body;
+    let mut matches = Vec::new();
+    scan_all_bodies_recursive(source, top_body, target_hash, window_size, &mut matches);
+    matches
+}
+
+/// Recursively scan all bodies (module, function, class) in the AST for matching blocks.
+fn scan_all_bodies_recursive(
+    source: &str,
+    body: &[Stmt],
+    target_hash: u64,
+    window_size: usize,
+    matches: &mut Vec<MatchedBlock>,
+) {
+    // Scan this body.
+    matches.extend(scan_body_with_hash(source, body, target_hash, window_size));
+
+    // Recurse into child scopes.
+    for stmt in body {
+        match stmt {
+            Stmt::FunctionDef(f) => {
+                scan_all_bodies_recursive(source, &f.body, target_hash, window_size, matches);
+            }
+            Stmt::ClassDef(c) => {
+                scan_all_bodies_recursive(source, &c.body, target_hash, window_size, matches);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Scan a body for blocks whose structural hash matches `target_hash`.
@@ -478,5 +536,79 @@ def bar():
 ";
         let matches = find_matches(code, 2, 3).unwrap();
         assert_eq!(matches.len(), 3, "2 in foo + 1 in bar");
+    }
+
+    #[test]
+    fn find_matches_with_hash_returns_hash_and_window() {
+        let code = "\
+a = 1
+b = a + 2
+c = 10
+d = c + 20
+";
+        let (hash, window_size, matches) = find_matches_with_hash(code, 1, 2).unwrap();
+        assert!(hash != 0, "Hash should be non-zero");
+        assert_eq!(window_size, 2);
+        assert_eq!(matches.len(), 2);
+    }
+
+    #[test]
+    fn find_matches_in_file_module_level() {
+        let target = "\
+a = 1
+b = a + 2
+";
+        let (hash, window, _) = find_matches_with_hash(target, 1, 2).unwrap();
+
+        let other = "\
+x = 10
+y = x + 20
+z = 100
+";
+        let matches = find_matches_in_file(other, hash, window);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].start_line, 1);
+        assert_eq!(matches[0].end_line, 2);
+    }
+
+    #[test]
+    fn find_matches_in_file_nested_scope() {
+        let target = "\
+a = 1
+b = a + 2
+";
+        let (hash, window, _) = find_matches_with_hash(target, 1, 2).unwrap();
+
+        let other = "\
+def foo():
+    x = 10
+    y = x + 20
+
+class Bar:
+    p = 100
+    q = p + 200
+";
+        let matches = find_matches_in_file(other, hash, window);
+        assert_eq!(
+            matches.len(),
+            2,
+            "Should find matches in function and class"
+        );
+    }
+
+    #[test]
+    fn find_matches_in_file_no_match() {
+        let target = "\
+a = 1
+b = a + 2
+";
+        let (hash, window, _) = find_matches_with_hash(target, 1, 2).unwrap();
+
+        let other = "\
+x = 1 - 2
+y = 3 * 4
+";
+        let matches = find_matches_in_file(other, hash, window);
+        assert!(matches.is_empty());
     }
 }

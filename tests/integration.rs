@@ -45,8 +45,33 @@ fn parse_options(dir: &Path) -> pym::ExtractOptions {
     opts
 }
 
-/// Run a success-case fixture: input.py + expected.py (+ optional options.toml).
-/// Returns Ok(()) on match, Err(message) on mismatch.
+/// Check if a fixture directory is a multi-file fixture (has extra_*.py files).
+fn is_multi_file_fixture(dir: &Path) -> bool {
+    fs::read_dir(dir).unwrap().filter_map(|e| e.ok()).any(|e| {
+        let name = e.file_name().to_string_lossy().to_string();
+        name.starts_with("extra_") && name.ends_with(".py")
+    })
+}
+
+/// Collect extra files in order: extra_1.py, extra_2.py, etc.
+fn collect_extra_files(dir: &Path) -> Vec<String> {
+    let mut extras: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with("extra_") && name.ends_with(".py") {
+                Some(name)
+            } else {
+                None
+            }
+        })
+        .collect();
+    extras.sort();
+    extras
+}
+
+/// Run a single-file success-case fixture: input.py + expected.py (+ optional options.toml).
 fn run_fixture(dir: &Path) -> Result<(), String> {
     let input = fs::read_to_string(dir.join("input.py"))
         .unwrap_or_else(|e| panic!("failed to read {}/input.py: {e}", dir.display()));
@@ -68,6 +93,116 @@ fn run_fixture(dir: &Path) -> Result<(), String> {
         return Err(format!(
             "output mismatch:\n--- expected ---\n{expected}\n--- got ---\n{result}"
         ));
+    }
+
+    Ok(())
+}
+
+/// Run a multi-file success-case fixture.
+fn run_multi_fixture(dir: &Path) -> Result<(), String> {
+    let input = fs::read_to_string(dir.join("input.py"))
+        .unwrap_or_else(|e| panic!("failed to read {}/input.py: {e}", dir.display()));
+    let expected = fs::read_to_string(dir.join("expected.py"))
+        .unwrap_or_else(|e| panic!("failed to read {}/expected.py: {e}", dir.display()));
+
+    let (start, end) = parse_marker(&input);
+    let options = parse_options(dir);
+    let func_name = options.func_name.as_deref().unwrap_or("extracted_func_0");
+
+    // Collect extra files.
+    let extra_names = collect_extra_files(dir);
+    let extra_sources: Vec<String> = extra_names
+        .iter()
+        .map(|name| {
+            fs::read_to_string(dir.join(name))
+                .unwrap_or_else(|e| panic!("failed to read {}/{name}: {e}", dir.display()))
+        })
+        .collect();
+
+    // Build sources array: [target, extra_1, extra_2, ...]
+    let mut sources: Vec<&str> = vec![input.as_str()];
+    sources.extend(extra_sources.iter().map(|s| s.as_str()));
+
+    // Stage 1: Scan target file.
+    let (target_hash, window_size, target_matches) =
+        pym::scan::find_matches_with_hash(&input, start, end)
+            .map_err(|e| format!("scan failed: {e}"))?;
+
+    // Build sourced blocks.
+    let mut all_blocks: Vec<pym::SourcedBlock> = target_matches
+        .into_iter()
+        .map(|b| pym::SourcedBlock {
+            block: b,
+            source_index: 0,
+        })
+        .collect();
+
+    for (i, src) in extra_sources.iter().enumerate() {
+        let extra_matches = pym::scan::find_matches_in_file(src, target_hash, window_size);
+        all_blocks.extend(extra_matches.into_iter().map(|b| pym::SourcedBlock {
+            block: b,
+            source_index: i + 1,
+        }));
+    }
+
+    if all_blocks.len() < 2 {
+        return Err(format!(
+            "Only {} block(s) found across all files. Need at least 2.",
+            all_blocks.len()
+        ));
+    }
+
+    // Stage 2: Plan.
+    let plan = pym::plan_extraction_multi(&sources, &all_blocks, start, end)
+        .map_err(|e| format!("plan failed: {e}"))?;
+
+    // Stage 3: Apply.
+    let results = pym::rewrite::apply_refactoring_multi(
+        &sources,
+        &all_blocks,
+        &plan.ref_node_positions,
+        &plan.sig,
+        func_name,
+        &plan.scope_ctx,
+        "input", // target file stem
+    );
+
+    // Check target file output.
+    if ruff_python_parser::parse_module(&results[0]).is_err() {
+        return Err(format!(
+            "target output is not valid Python:\n{}",
+            results[0]
+        ));
+    }
+    if results[0] != expected {
+        return Err(format!(
+            "target output mismatch:\n--- expected ---\n{expected}\n--- got ---\n{}",
+            results[0]
+        ));
+    }
+
+    // Check each extra file output.
+    for (i, extra_name) in extra_names.iter().enumerate() {
+        let expected_name = extra_name.replace("extra_", "expected_extra_");
+        let expected_path = dir.join(&expected_name);
+
+        if expected_path.exists() {
+            let expected_extra = fs::read_to_string(&expected_path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", expected_path.display()));
+
+            let result = &results[i + 1];
+
+            if ruff_python_parser::parse_module(result).is_err() {
+                return Err(format!(
+                    "{extra_name} output is not valid Python:\n{result}"
+                ));
+            }
+            if result.as_str() != expected_extra {
+                return Err(format!(
+                    "{extra_name} output mismatch:\n--- expected ---\n{expected_extra}\n--- got ---\n{result}"
+                ));
+            }
+        }
     }
 
     Ok(())
@@ -114,7 +249,13 @@ fn fixture_tests() {
         let is_known_bug = dir.join("known_bug.txt").exists();
 
         if dir.join("expected.py").exists() {
-            match (run_fixture(&dir), is_known_bug) {
+            let result = if is_multi_file_fixture(&dir) {
+                run_multi_fixture(&dir)
+            } else {
+                run_fixture(&dir)
+            };
+
+            match (result, is_known_bug) {
                 (Ok(()), false) => {
                     eprintln!("  PASS:      {name}");
                     passed += 1;
