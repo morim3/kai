@@ -3,7 +3,6 @@ use std::hash::{Hash, Hasher};
 use anyhow::{Result, bail};
 use ruff_python_ast::visitor::{Visitor, walk_expr, walk_stmt};
 use ruff_python_ast::{BoolOp, CmpOp, Expr, ExprContext, Operator, Stmt, UnaryOp};
-use ruff_python_parser::parse_module;
 use ruff_text_size::Ranged;
 use rustc_hash::FxHasher;
 
@@ -32,7 +31,7 @@ pub fn hash_block(source: &str, start_line: usize, end_line: usize) -> Result<u6
         bail!("Invalid line range: {start_line}..={end_line}");
     }
 
-    let parsed = parse_module(source).map_err(|e| anyhow::anyhow!("Parse error: {e}"))?;
+    let parsed = crate::parse_python(source)?;
 
     let stmts = select_stmts(source, &parsed.syntax().body, start_line, end_line);
     if stmts.is_empty() {

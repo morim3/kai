@@ -129,25 +129,30 @@ fn get_function_name(default: &str) -> Result<String> {
     }
 }
 
-/// Step 3: Rename parameters with validation.
-fn rename_parameters(sig: &mut FunctionSignature) -> Result<()> {
-    if sig.params.is_empty() {
+/// Generic rename loop: display per-block values, then prompt the user to rename
+/// each item with validation and duplicate checking.
+fn rename_collection(
+    names: &mut [String],
+    per_block_maps: &[Vec<String>],
+    header: &str,
+    label: &str,
+) -> Result<()> {
+    if names.is_empty() {
         return Ok(());
     }
 
-    eprintln!("\nParameters (per-block values):");
-    for (i, name) in sig.params.iter().enumerate() {
-        let values: Vec<&str> = sig
-            .block_arg_maps
+    eprintln!("\n{header}:");
+    for (i, name) in names.iter().enumerate() {
+        let values: Vec<&str> = per_block_maps
             .iter()
             .map(|m| m.get(i).map(|s| s.as_str()).unwrap_or("?"))
             .collect();
         eprintln!("  {name}: {}", values.join(" | "));
     }
 
-    for i in 0..sig.params.len() {
+    for i in 0..names.len() {
         loop {
-            let current = &sig.params[i];
+            let current = names[i].clone();
             let new_name: String = Input::new()
                 .with_prompt(format!("Rename {current}"))
                 .default(current.clone())
@@ -158,19 +163,17 @@ fn rename_parameters(sig: &mut FunctionSignature) -> Result<()> {
                 continue;
             }
 
-            // Check duplicates against other params.
-            let dup = sig
-                .params
+            let dup = names
                 .iter()
                 .enumerate()
-                .any(|(j, p)| j != i && p == &new_name);
+                .any(|(j, n)| j != i && n == &new_name);
             if dup {
-                eprintln!("  Invalid: '{new_name}' is already used by another parameter");
+                eprintln!("  Invalid: '{new_name}' is already used by another {label}");
                 continue;
             }
 
-            if new_name != *current {
-                sig.params[i] = new_name;
+            if new_name != current {
+                names[i] = new_name;
             }
             break;
         }
@@ -178,52 +181,24 @@ fn rename_parameters(sig: &mut FunctionSignature) -> Result<()> {
     Ok(())
 }
 
+/// Step 3: Rename parameters with validation.
+fn rename_parameters(sig: &mut FunctionSignature) -> Result<()> {
+    rename_collection(
+        &mut sig.params,
+        &sig.block_arg_maps,
+        "Parameters (per-block values)",
+        "parameter",
+    )
+}
+
 /// Step 4: Rename return values with validation.
 fn rename_returns(sig: &mut FunctionSignature) -> Result<()> {
-    if sig.returns.is_empty() {
-        return Ok(());
-    }
-
-    eprintln!("\nReturns (per-block names):");
-    for (i, ret_name) in sig.returns.iter().enumerate() {
-        let values: Vec<&str> = sig
-            .block_return_maps
-            .iter()
-            .map(|m| m.get(i).map(|s| s.as_str()).unwrap_or("?"))
-            .collect();
-        eprintln!("  {ret_name}: {}", values.join(" | "));
-    }
-
-    for i in 0..sig.returns.len() {
-        loop {
-            let current = sig.returns[i].clone();
-            let new_name: String = Input::new()
-                .with_prompt(format!("Rename {current}"))
-                .default(current.clone())
-                .interact_text()?;
-
-            if let Some(msg) = validate_ident(&new_name) {
-                eprintln!("  Invalid: {msg}");
-                continue;
-            }
-
-            let dup = sig
-                .returns
-                .iter()
-                .enumerate()
-                .any(|(j, r)| j != i && r == &new_name);
-            if dup {
-                eprintln!("  Invalid: '{new_name}' is already used by another return value");
-                continue;
-            }
-
-            if new_name != current {
-                sig.returns[i] = new_name;
-            }
-            break;
-        }
-    }
-    Ok(())
+    rename_collection(
+        &mut sig.returns,
+        &sig.block_return_maps,
+        "Returns (per-block names)",
+        "return value",
+    )
 }
 
 /// Step 5: Offer additional return value candidates from block stores.
@@ -413,26 +388,7 @@ pub fn run_interactive(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_sig(
-        params: &[&str],
-        returns: &[&str],
-        arg_maps: &[&[&str]],
-        ret_maps: &[&[&str]],
-    ) -> FunctionSignature {
-        FunctionSignature {
-            params: params.iter().map(|s| s.to_string()).collect(),
-            returns: returns.iter().map(|s| s.to_string()).collect(),
-            block_arg_maps: arg_maps
-                .iter()
-                .map(|m| m.iter().map(|s| s.to_string()).collect())
-                .collect(),
-            block_return_maps: ret_maps
-                .iter()
-                .map(|m| m.iter().map(|s| s.to_string()).collect())
-                .collect(),
-        }
-    }
+    use crate::test_utils::make_sig;
 
     // ── Validation tests ──
 

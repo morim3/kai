@@ -1,6 +1,5 @@
 use anyhow::{Result, bail};
 use ruff_python_ast::Stmt;
-use ruff_python_parser::parse_module;
 use ruff_text_size::Ranged;
 
 use crate::normalize::{
@@ -230,7 +229,7 @@ pub fn find_matches(
         bail!("Invalid line range: {target_start}..={target_end}");
     }
 
-    let parsed = parse_module(source).map_err(|e| anyhow::anyhow!("Parse error: {e}"))?;
+    let parsed = crate::parse_python(source)?;
     let top_body = &parsed.syntax().body;
     let scope_info = find_scopes(top_body, source, target_start, target_end);
 

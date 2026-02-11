@@ -276,27 +276,7 @@ impl<'a> Visitor<'a> for NodeCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scope::FunctionSignature;
-
-    fn make_sig(
-        params: &[&str],
-        returns: &[&str],
-        arg_maps: &[&[&str]],
-        ret_maps: &[&[&str]],
-    ) -> FunctionSignature {
-        FunctionSignature {
-            params: params.iter().map(|s| s.to_string()).collect(),
-            returns: returns.iter().map(|s| s.to_string()).collect(),
-            block_arg_maps: arg_maps
-                .iter()
-                .map(|m| m.iter().map(|s| s.to_string()).collect())
-                .collect(),
-            block_return_maps: ret_maps
-                .iter()
-                .map(|m| m.iter().map(|s| s.to_string()).collect())
-                .collect(),
-        }
-    }
+    use crate::test_utils::make_sig;
 
     #[test]
     fn generate_call_no_returns() {

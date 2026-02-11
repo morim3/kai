@@ -10,6 +10,8 @@ pub mod scope;
 pub(crate) mod test_utils {
     use ruff_python_ast::Stmt;
 
+    use crate::scope::FunctionSignature;
+
     /// Parse Python source and return the top-level body statements.
     pub fn parse_stmts(source: &str) -> Vec<Stmt> {
         ruff_python_parser::parse_module(source)
@@ -17,13 +19,41 @@ pub(crate) mod test_utils {
             .into_syntax()
             .body
     }
+
+    /// Build a `FunctionSignature` from string slices (test convenience).
+    pub fn make_sig(
+        params: &[&str],
+        returns: &[&str],
+        arg_maps: &[&[&str]],
+        ret_maps: &[&[&str]],
+    ) -> FunctionSignature {
+        FunctionSignature {
+            params: params.iter().map(|s| s.to_string()).collect(),
+            returns: returns.iter().map(|s| s.to_string()).collect(),
+            block_arg_maps: arg_maps
+                .iter()
+                .map(|m| m.iter().map(|s| s.to_string()).collect())
+                .collect(),
+            block_return_maps: ret_maps
+                .iter()
+                .map(|m| m.iter().map(|s| s.to_string()).collect())
+                .collect(),
+        }
+    }
 }
 
 use anyhow::{Context, Result, bail};
+use ruff_python_ast::ModModule;
+use ruff_python_parser::Parsed;
 use ruff_text_size::Ranged;
 
 use scan::{MatchedBlock, ScopeContext};
 use scope::FunctionSignature;
+
+/// Parse Python source, mapping the parser error to `anyhow`.
+pub fn parse_python(source: &str) -> Result<Parsed<ModModule>> {
+    ruff_python_parser::parse_module(source).map_err(|e| anyhow::anyhow!("Parse error: {e}"))
+}
 
 /// Options for customizing the extract-method refactoring.
 #[derive(Debug, Clone, Default)]
@@ -59,9 +89,7 @@ pub fn plan_extraction(
     start_line: usize,
     end_line: usize,
 ) -> Result<ExtractionPlan> {
-    let syntax = ruff_python_parser::parse_module(source)
-        .map_err(|e| anyhow::anyhow!("Parse error: {e}"))?
-        .into_syntax();
+    let syntax = parse_python(source)?.into_syntax();
     let top_body = &syntax.body;
 
     // Determine the scope context: innermost if all blocks share a body,
