@@ -252,8 +252,8 @@ fn rename_collection(
 
 /// Step 3: Rename parameters with validation.
 ///
-/// After renaming, returns that were auto-linked to a param (output=input,
-/// named `arg_N`) are synced to the new param name.
+/// After renaming, returns whose original variable matches a param's original
+/// variable (output=input) are synced to the new param name.
 fn rename_parameters(sig: &mut FunctionSignature) -> Result<()> {
     rename_collection(
         &mut sig.params,
@@ -262,13 +262,16 @@ fn rename_parameters(sig: &mut FunctionSignature) -> Result<()> {
         "parameter",
     )?;
 
-    // Auto-sync: when unify_signatures set a return to "arg_N" (output=input),
-    // update it to match the (possibly renamed) param.
-    for ret in &mut sig.returns {
-        if let Some(idx) = ret.strip_prefix("arg_").and_then(|n| n.parse::<usize>().ok())
-            && idx < sig.params.len() {
-                *ret = sig.params[idx].clone();
+    // Auto-sync output=input returns: if a return's original variable name
+    // matches a param's original variable name, they are the same variable.
+    if let (Some(arg_map), Some(ret_map)) =
+        (sig.block_arg_maps.first(), sig.block_return_maps.first())
+    {
+        for (ret_idx, ret_orig) in ret_map.iter().enumerate() {
+            if let Some(param_idx) = arg_map.iter().position(|a| a == ret_orig) {
+                sig.returns[ret_idx] = sig.params[param_idx].clone();
             }
+        }
     }
     Ok(())
 }
