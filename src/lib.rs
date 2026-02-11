@@ -50,17 +50,26 @@ pub fn extract_method_with_options(
         );
     }
 
-    let parsed = ruff_python_parser::parse_module(source)
-        .map_err(|e| anyhow::anyhow!("Parse error: {e}"))?;
-    let top_body = &parsed.into_syntax().body;
-    let (body, scope_ctx) = scan::find_innermost_body(top_body, source, start_line, end_line);
+    let syntax = ruff_python_parser::parse_module(source)
+        .map_err(|e| anyhow::anyhow!("Parse error: {e}"))?
+        .into_syntax();
+    let top_body = &syntax.body;
+
+    // Determine the scope context: innermost if all blocks share a body,
+    // parent if they span sibling scopes.
+    let scope_ctx = scan::find_scope_for_matches(top_body, source, start_line, end_line, &blocks);
+
+    // Get window size from the innermost body (where the target lives).
+    let (inner_body, _) = scan::find_innermost_body(top_body, source, start_line, end_line);
     let window_size = {
-        let target_stmts = normalize::select_stmts(source, body, start_line, end_line);
+        let target_stmts = normalize::select_stmts(source, inner_body, start_line, end_line);
         target_stmts.len()
     };
 
+    // For each block, find its own body and compute after_block from that body.
     let mut sig_inputs: Vec<(&[ruff_python_ast::Stmt], &[ruff_python_ast::Stmt])> = Vec::new();
     for block in &blocks {
+        let body = scan::find_body_for_block(top_body, source, block.start_offset);
         let idx = body
             .iter()
             .position(|s| s.range().start().to_usize() == block.start_offset)

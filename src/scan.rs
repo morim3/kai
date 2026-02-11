@@ -96,21 +96,7 @@ fn find_innermost_body_inner<'a>(
         }
     }
 
-    let (body_start_offset, indent) = if let Some(first) = body.first() {
-        let offset = first.range().start().to_usize();
-        let line_start = source[..offset].rfind('\n').map_or(0, |p| p + 1);
-        (offset, source[line_start..offset].to_string())
-    } else {
-        (0, String::new())
-    };
-
-    let ctx = ScopeContext {
-        kind: current_kind,
-        body_start_offset,
-        indent,
-        class_def_offset,
-        parent_indent,
-    };
+    let ctx = make_scope_context(body, source, current_kind, class_def_offset, parent_indent);
     (body, ctx)
 }
 
@@ -123,6 +109,170 @@ fn compute_indent(body: &[Stmt], source: &str) -> String {
     } else {
         String::new()
     }
+}
+
+/// Build a `ScopeContext` from a body and its scope metadata.
+fn make_scope_context(
+    body: &[Stmt],
+    source: &str,
+    kind: ScopeKind,
+    class_def_offset: Option<usize>,
+    parent_indent: Option<String>,
+) -> ScopeContext {
+    let (body_start_offset, indent) = if let Some(first) = body.first() {
+        let offset = first.range().start().to_usize();
+        let line_start = source[..offset].rfind('\n').map_or(0, |p| p + 1);
+        (offset, source[line_start..offset].to_string())
+    } else {
+        (0, String::new())
+    };
+    ScopeContext {
+        kind,
+        body_start_offset,
+        indent,
+        class_def_offset,
+        parent_indent,
+    }
+}
+
+/// Find the parent body (one level above the innermost body containing the target)
+/// and its `ScopeContext`. Returns `None` if the target is directly at the top level.
+fn find_parent_with_ctx<'a>(
+    body: &'a [Stmt],
+    source: &str,
+    target_start: usize,
+    target_end: usize,
+) -> Option<(&'a [Stmt], ScopeContext)> {
+    find_parent_with_ctx_inner(
+        body,
+        source,
+        target_start,
+        target_end,
+        ScopeKind::Module,
+        None,
+        None,
+    )
+}
+
+fn find_parent_with_ctx_inner<'a>(
+    body: &'a [Stmt],
+    source: &str,
+    target_start: usize,
+    target_end: usize,
+    current_kind: ScopeKind,
+    class_def_offset: Option<usize>,
+    parent_indent: Option<String>,
+) -> Option<(&'a [Stmt], ScopeContext)> {
+    for stmt in body {
+        let range = stmt.range();
+        let stmt_start = line_of_offset(source, range.start().to_usize());
+        let stmt_end = line_of_offset(source, range.end().to_usize().saturating_sub(1));
+
+        if stmt_start <= target_start && stmt_end >= target_end {
+            match stmt {
+                Stmt::FunctionDef(f) => {
+                    // Try to find a deeper parent inside f.body.
+                    let deeper = find_parent_with_ctx_inner(
+                        &f.body,
+                        source,
+                        target_start,
+                        target_end,
+                        ScopeKind::Function,
+                        None,
+                        None,
+                    );
+                    if deeper.is_some() {
+                        return deeper;
+                    }
+                    // Target is directly in f.body → current body is the parent.
+                    let ctx = make_scope_context(
+                        body,
+                        source,
+                        current_kind,
+                        class_def_offset,
+                        parent_indent,
+                    );
+                    return Some((body, ctx));
+                }
+                Stmt::ClassDef(c) => {
+                    let current_indent = compute_indent(body, source);
+                    let deeper = find_parent_with_ctx_inner(
+                        &c.body,
+                        source,
+                        target_start,
+                        target_end,
+                        ScopeKind::Class,
+                        Some(range.start().to_usize()),
+                        Some(current_indent),
+                    );
+                    if deeper.is_some() {
+                        return deeper;
+                    }
+                    let ctx = make_scope_context(
+                        body,
+                        source,
+                        current_kind,
+                        class_def_offset,
+                        parent_indent,
+                    );
+                    return Some((body, ctx));
+                }
+                _ => {}
+            }
+        }
+    }
+    // Target is directly in this body — no parent exists at a higher level.
+    None
+}
+
+/// Check if two body slices are the same (by comparing the start offset of their first statement).
+fn same_body(a: &[Stmt], b: &[Stmt]) -> bool {
+    match (a.first(), b.first()) {
+        (Some(x), Some(y)) => x.range().start() == y.range().start(),
+        _ => a.is_empty() && b.is_empty(),
+    }
+}
+
+/// Find the innermost body containing a given byte offset.
+///
+/// Used by `lib.rs` to find each matched block's body for `after_block` computation.
+pub fn find_body_for_block<'a>(
+    top_body: &'a [Stmt],
+    source: &str,
+    block_start_offset: usize,
+) -> &'a [Stmt] {
+    let line = line_of_offset(source, block_start_offset);
+    let (body, _) = find_innermost_body(top_body, source, line, line);
+    body
+}
+
+/// Determine the appropriate scope context based on where all matched blocks reside.
+///
+/// If all matches are within the same body, returns the innermost scope context.
+/// If matches span sibling scopes, returns the parent scope context.
+pub fn find_scope_for_matches(
+    top_body: &[Stmt],
+    source: &str,
+    target_start: usize,
+    target_end: usize,
+    matches: &[MatchedBlock],
+) -> ScopeContext {
+    let (inner_body, inner_ctx) = find_innermost_body(top_body, source, target_start, target_end);
+
+    let all_in_same_body = matches.iter().all(|m| {
+        inner_body
+            .iter()
+            .any(|s| s.range().start().to_usize() == m.start_offset)
+    });
+
+    if all_in_same_body {
+        return inner_ctx;
+    }
+
+    // Matches span sibling scopes — use parent scope context.
+    find_parent_with_ctx(top_body, source, target_start, target_end)
+        .map(|(_, ctx)| ctx)
+        .unwrap_or(inner_ctx)
 }
 
 /// A matched block in the source file.
@@ -142,7 +292,8 @@ pub struct MatchedBlock {
 /// the target block (identified by `target_start..=target_end` lines).
 ///
 /// Automatically finds the innermost scope (function/class) containing
-/// the target and scans within that scope's body.
+/// the target and scans within that scope's body. Also scans sibling
+/// scopes (other functions/classes at the same parent level) for matches.
 ///
 /// Returns the list of all matching blocks, **including** the target itself.
 pub fn find_matches(
@@ -156,29 +307,49 @@ pub fn find_matches(
 
     let parsed = parse_module(source).map_err(|e| anyhow::anyhow!("Parse error: {e}"))?;
     let top_body = &parsed.syntax().body;
-    let (body, _ctx) = find_innermost_body(top_body, source, target_start, target_end);
+    let (inner_body, _ctx) = find_innermost_body(top_body, source, target_start, target_end);
 
-    scan_body(source, body, target_start, target_end)
-}
-
-/// Scan a body (slice of statements) for blocks matching the target line range.
-fn scan_body(
-    source: &str,
-    body: &[Stmt],
-    target_start: usize,
-    target_end: usize,
-) -> Result<Vec<MatchedBlock>> {
-    let target_stmts = select_stmts(source, body, target_start, target_end);
+    // Compute target hash from the innermost body.
+    let target_stmts = select_stmts(source, inner_body, target_start, target_end);
     if target_stmts.is_empty() {
         bail!("No statements found in target range {target_start}..={target_end}");
     }
-
     let window_size = target_stmts.len();
     let target_hash = hash_stmt_refs(&target_stmts);
 
+    // Scan the innermost body.
+    let mut matches = scan_body_with_hash(source, inner_body, target_hash, window_size);
+
+    // Scan sibling scopes at the parent level.
+    if let Some((parent_body, _)) = find_parent_with_ctx(top_body, source, target_start, target_end)
+    {
+        for stmt in parent_body {
+            let child_body: Option<&[Stmt]> = match stmt {
+                Stmt::FunctionDef(f) => Some(&f.body),
+                Stmt::ClassDef(c) => Some(&c.body),
+                _ => None,
+            };
+            if let Some(child) = child_body
+                && !same_body(child, inner_body)
+            {
+                matches.extend(scan_body_with_hash(source, child, target_hash, window_size));
+            }
+        }
+    }
+
+    Ok(matches)
+}
+
+/// Scan a body for blocks whose structural hash matches `target_hash`.
+fn scan_body_with_hash(
+    source: &str,
+    body: &[Stmt],
+    target_hash: u64,
+    window_size: usize,
+) -> Vec<MatchedBlock> {
     let mut matches = Vec::new();
     if body.len() < window_size {
-        return Ok(matches);
+        return matches;
     }
 
     for i in 0..=(body.len() - window_size) {
@@ -200,7 +371,7 @@ fn scan_body(
         }
     }
 
-    Ok(matches)
+    matches
 }
 
 #[cfg(test)]
@@ -327,5 +498,62 @@ baz(1, 2)
         // foo(x,y) and bar(a,b) are both `FUNC(VAR, VAR)` - same structure
         // baz(1,2) is `FUNC(CONST, CONST)` - different
         assert_eq!(matches.len(), 2);
+    }
+
+    #[test]
+    fn scan_across_sibling_functions() {
+        let code = "\
+def foo():
+    a = 1
+    b = a + 2
+
+def bar():
+    x = 10
+    y = x + 20
+";
+        let matches = find_matches(code, 2, 3).unwrap();
+        assert_eq!(
+            matches.len(),
+            2,
+            "Should find matches across sibling functions"
+        );
+        assert_eq!(matches[0].start_line, 2);
+        assert_eq!(matches[1].start_line, 6);
+    }
+
+    #[test]
+    fn scan_across_sibling_classes() {
+        let code = "\
+class Foo:
+    a = 1
+    b = a + 2
+
+class Bar:
+    x = 10
+    y = x + 20
+";
+        let matches = find_matches(code, 2, 3).unwrap();
+        assert_eq!(
+            matches.len(),
+            2,
+            "Should find matches across sibling classes"
+        );
+    }
+
+    #[test]
+    fn scan_siblings_plus_same_body() {
+        let code = "\
+def foo():
+    a = 1
+    b = a + 2
+    c = 10
+    d = c + 20
+
+def bar():
+    x = 100
+    y = x + 200
+";
+        let matches = find_matches(code, 2, 3).unwrap();
+        assert_eq!(matches.len(), 3, "2 in foo + 1 in bar");
     }
 }
