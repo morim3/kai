@@ -15,12 +15,17 @@ pub fn generate_function_def(
 ) -> String {
     let body_text = &source[reference_block.start_offset..reference_block.end_offset];
 
-    // Determine the indentation of the original block.
-    let original_indent = detect_indent(body_text);
+    // Determine the indentation of the original block from the source line.
+    let original_indent = indent_at_offset(source, reference_block.start_offset);
+
+    // Prepend the original indent to the body text so that all lines have
+    // consistent indentation. The AST byte range starts at the first token,
+    // so the first line's leading whitespace is missing from body_text.
+    let full_body_text = format!("{original_indent}{body_text}");
 
     // Build the function body with parameter names substituted.
     // Replace the first block's variable names with the param/return names.
-    let mut body = body_text.to_string();
+    let mut body = full_body_text;
     if let Some(arg_map) = sig.block_arg_maps.first() {
         for (i, original_name) in arg_map.iter().enumerate() {
             body = replace_identifier(&body, original_name, &sig.params[i]);
@@ -82,7 +87,7 @@ pub fn apply_refactoring(
         .iter()
         .enumerate()
         .map(|(i, block)| {
-            let indent = detect_indent(&source[block.start_offset..block.end_offset]);
+            let indent = indent_at_offset(source, block.start_offset);
             let call = generate_call(sig, i, func_name);
             let replacement = format!("{indent}{call}\n");
             (block.start_offset, block.end_offset, replacement)
@@ -118,11 +123,13 @@ pub fn unified_diff(original: &str, modified: &str, filename: &str) -> String {
     output
 }
 
-/// Detect the leading whitespace (indent) of the first line in a code block.
-fn detect_indent(text: &str) -> String {
-    let first_line = text.lines().next().unwrap_or("");
-    let trimmed = first_line.trim_start();
-    first_line[..first_line.len() - trimmed.len()].to_string()
+/// Get the indentation of the line containing the given byte offset.
+///
+/// Unlike `detect_indent`, this works correctly for nested code because
+/// it looks at the full source line, not just the AST byte range.
+fn indent_at_offset(source: &str, offset: usize) -> String {
+    let line_start = source[..offset].rfind('\n').map_or(0, |p| p + 1);
+    source[line_start..offset].to_string()
 }
 
 /// Re-indent a code block from `old_indent` to `new_indent`.
@@ -249,9 +256,14 @@ mod tests {
     }
 
     #[test]
-    fn detect_indent_works() {
-        assert_eq!(detect_indent("    x = 1\n    y = 2"), "    ");
-        assert_eq!(detect_indent("x = 1"), "");
+    fn indent_at_offset_works() {
+        let source = "    x = 1\n        y = 2\n";
+        // offset 4 is at 'x', indent is "    "
+        assert_eq!(indent_at_offset(source, 4), "    ");
+        // offset 14 is at 'y' (after "    x = 1\n        "), indent is "        "
+        assert_eq!(indent_at_offset(source, 18), "        ");
+        // offset 0 at start of file
+        assert_eq!(indent_at_offset("x = 1", 0), "");
     }
 
     #[test]

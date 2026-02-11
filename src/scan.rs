@@ -1,8 +1,39 @@
 use anyhow::{Result, bail};
+use ruff_python_ast::Stmt;
 use ruff_python_parser::parse_module;
 use ruff_text_size::Ranged;
 
 use crate::normalize::{hash_stmt_refs, hash_stmts, line_of_offset, select_stmts};
+
+/// Find the innermost scope body containing the given line range.
+///
+/// Recursively drills into `FunctionDef`, `AsyncFunctionDef`, and `ClassDef`
+/// to find the deepest body that fully contains `target_start..=target_end`.
+pub fn find_innermost_body<'a>(
+    body: &'a [Stmt],
+    source: &str,
+    target_start: usize,
+    target_end: usize,
+) -> &'a [Stmt] {
+    for stmt in body {
+        let range = stmt.range();
+        let stmt_start = line_of_offset(source, range.start().to_usize());
+        let stmt_end = line_of_offset(source, range.end().to_usize().saturating_sub(1));
+
+        if stmt_start <= target_start && stmt_end >= target_end {
+            match stmt {
+                Stmt::FunctionDef(f) => {
+                    return find_innermost_body(&f.body, source, target_start, target_end);
+                }
+                Stmt::ClassDef(c) => {
+                    return find_innermost_body(&c.body, source, target_start, target_end);
+                }
+                _ => {}
+            }
+        }
+    }
+    body
+}
 
 /// A matched block in the source file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,8 +48,11 @@ pub struct MatchedBlock {
     pub end_offset: usize,
 }
 
-/// Scan the file for all top-level statement blocks that structurally match
+/// Scan the file for statement blocks that structurally match
 /// the target block (identified by `target_start..=target_end` lines).
+///
+/// Automatically finds the innermost scope (function/class) containing
+/// the target and scans within that scope's body.
 ///
 /// Returns the list of all matching blocks, **including** the target itself.
 pub fn find_matches(
@@ -31,9 +65,19 @@ pub fn find_matches(
     }
 
     let parsed = parse_module(source).map_err(|e| anyhow::anyhow!("Parse error: {e}"))?;
-    let body = &parsed.syntax().body;
+    let top_body = &parsed.syntax().body;
+    let body = find_innermost_body(top_body, source, target_start, target_end);
 
-    // Find the target statements and compute the window size.
+    scan_body(source, body, target_start, target_end)
+}
+
+/// Scan a body (slice of statements) for blocks matching the target line range.
+fn scan_body(
+    source: &str,
+    body: &[Stmt],
+    target_start: usize,
+    target_end: usize,
+) -> Result<Vec<MatchedBlock>> {
     let target_stmts = select_stmts(source, body, target_start, target_end);
     if target_stmts.is_empty() {
         bail!("No statements found in target range {target_start}..={target_end}");
@@ -42,7 +86,6 @@ pub fn find_matches(
     let window_size = target_stmts.len();
     let target_hash = hash_stmt_refs(&target_stmts);
 
-    // Slide a window of the same size across all top-level statements.
     let mut matches = Vec::new();
     if body.len() < window_size {
         return Ok(matches);
@@ -150,6 +193,37 @@ c = z * 3
         // Second statement: bytes 6..11
         assert_eq!(matches[1].start_offset, 6);
         assert_eq!(matches[1].end_offset, 11);
+    }
+
+    #[test]
+    fn scan_inside_function_body() {
+        let code = "\
+def process():
+    a = 1
+    b = a + 2
+    c = 10
+    d = c + 20
+";
+        let matches = find_matches(code, 2, 3).unwrap();
+        assert_eq!(matches.len(), 2, "Should find 2 blocks inside function");
+        assert_eq!(matches[0].start_line, 2);
+        assert_eq!(matches[1].start_line, 4);
+    }
+
+    #[test]
+    fn scan_inside_class_method() {
+        let code = "\
+class Foo:
+    def method(self):
+        x = 1
+        y = x + 2
+        a = 10
+        b = a + 20
+";
+        let matches = find_matches(code, 3, 4).unwrap();
+        assert_eq!(matches.len(), 2, "Should find 2 blocks inside method");
+        assert_eq!(matches[0].start_line, 3);
+        assert_eq!(matches[1].start_line, 5);
     }
 
     #[test]
