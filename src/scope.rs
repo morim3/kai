@@ -1,87 +1,16 @@
 use ruff_python_ast::visitor::{Visitor, walk_expr, walk_stmt};
 use ruff_python_ast::{Expr, ExprContext, Stmt};
+use ruff_python_stdlib::builtins::is_python_builtin;
 use rustc_hash::FxHashSet;
 
 use crate::diff_extract::Divergence;
 
-/// Python 3 built-in function and type names.
-/// These are excluded from scope analysis inputs so they don't become function parameters.
-const PYTHON_BUILTINS: &[&str] = &[
-    "abs",
-    "aiter",
-    "all",
-    "anext",
-    "any",
-    "ascii",
-    "bin",
-    "bool",
-    "breakpoint",
-    "bytearray",
-    "bytes",
-    "callable",
-    "chr",
-    "classmethod",
-    "compile",
-    "complex",
-    "delattr",
-    "dict",
-    "dir",
-    "divmod",
-    "enumerate",
-    "eval",
-    "exec",
-    "filter",
-    "float",
-    "format",
-    "frozenset",
-    "getattr",
-    "globals",
-    "hasattr",
-    "hash",
-    "help",
-    "hex",
-    "id",
-    "input",
-    "int",
-    "isinstance",
-    "issubclass",
-    "iter",
-    "len",
-    "list",
-    "locals",
-    "map",
-    "max",
-    "memoryview",
-    "min",
-    "next",
-    "object",
-    "oct",
-    "open",
-    "ord",
-    "pow",
-    "print",
-    "property",
-    "range",
-    "repr",
-    "reversed",
-    "round",
-    "set",
-    "setattr",
-    "slice",
-    "sorted",
-    "staticmethod",
-    "str",
-    "sum",
-    "super",
-    "tuple",
-    "type",
-    "vars",
-    "zip",
-    "__import__",
-];
+/// Default Python minor version for builtin detection (Python 3.12).
+const DEFAULT_PY_MINOR: u8 = 12;
 
-fn is_python_builtin(name: &str) -> bool {
-    PYTHON_BUILTINS.contains(&name)
+/// Check if a name is a Python builtin that should be excluded from parameters.
+fn is_builtin(name: &str) -> bool {
+    is_python_builtin(name, DEFAULT_PY_MINOR, false)
 }
 
 /// The interface of an extracted function block.
@@ -285,7 +214,7 @@ impl VarCollector {
                 }
                 VarAction::Load => {
                     if !stored_set.contains(name.as_str())
-                        && !is_python_builtin(name)
+                        && !is_builtin(name)
                         && input_set.insert(name.as_str())
                     {
                         inputs.push(name.clone());
