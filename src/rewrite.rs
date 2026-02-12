@@ -10,6 +10,15 @@ use crate::normalize::indent_at_offset;
 use crate::scan::{MatchedBlock, ScopeContext, ScopeKind};
 use crate::scope::FunctionSignature;
 
+/// Byte position of an AST node (Name or literal) in source text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodePosition {
+    /// Byte offset from the start of the source.
+    pub offset: usize,
+    /// Byte length of the node's source text.
+    pub len: usize,
+}
+
 /// Generate the extracted function definition as a string.
 ///
 /// Uses the source text of the first matched block as the function body,
@@ -19,7 +28,7 @@ use crate::scope::FunctionSignature;
 pub fn generate_function_def(
     source: &str,
     reference_block: &MatchedBlock,
-    ref_node_positions: &[(usize, usize)],
+    ref_node_positions: &[NodePosition],
     sig: &FunctionSignature,
     func_name: &str,
     scope: &ScopeContext,
@@ -90,6 +99,38 @@ pub fn generate_call(sig: &FunctionSignature, block_index: usize, func_name: &st
     }
 }
 
+/// Apply text edits to source, processing from end to start to preserve offsets.
+///
+/// Each edit is `(block_start_offset, block_end_offset, replacement_text)`.
+/// Edits are extended to full line boundaries (consuming leading whitespace and trailing newline).
+fn apply_block_edits(source: &str, mut edits: Vec<(usize, usize, String)>) -> String {
+    edits.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut result = source.to_string();
+    for (start, end, replacement) in &edits {
+        let line_start = source[..*start].rfind('\n').map_or(0, |p| p + 1);
+        let line_end = source[*end..].find('\n').map_or(*end, |p| *end + p + 1);
+        result.replace_range(line_start..line_end, replacement);
+    }
+    result
+}
+
+/// Build replacement edits for a set of matched blocks.
+fn build_call_edits<'a>(
+    source: &str,
+    blocks: impl Iterator<Item = (usize, &'a MatchedBlock)>,
+    sig: &FunctionSignature,
+    func_name: &str,
+) -> Vec<(usize, usize, String)> {
+    blocks
+        .map(|(sig_idx, block)| {
+            let indent = indent_at_offset(source, block.start_offset);
+            let call = generate_call(sig, sig_idx, func_name);
+            let replacement = format!("{indent}{call}\n");
+            (block.start_offset, block.end_offset, replacement)
+        })
+        .collect()
+}
+
 /// Apply the refactoring: replace matched blocks with function calls,
 /// and insert the function definition at the appropriate scope.
 ///
@@ -97,7 +138,7 @@ pub fn generate_call(sig: &FunctionSignature, block_index: usize, func_name: &st
 pub fn apply_refactoring(
     source: &str,
     blocks: &[MatchedBlock],
-    ref_node_positions: &[(usize, usize)],
+    ref_node_positions: &[NodePosition],
     sig: &FunctionSignature,
     func_name: &str,
     scope: &ScopeContext,
@@ -111,28 +152,8 @@ pub fn apply_refactoring(
         scope,
     );
 
-    // Build edits sorted by offset (descending so we can apply from end to start).
-    let mut edits: Vec<(usize, usize, String)> = blocks
-        .iter()
-        .enumerate()
-        .map(|(i, block)| {
-            let indent = indent_at_offset(source, block.start_offset);
-            let call = generate_call(sig, i, func_name);
-            let replacement = format!("{indent}{call}\n");
-            (block.start_offset, block.end_offset, replacement)
-        })
-        .collect();
-
-    // Sort descending by start offset so edits don't invalidate each other.
-    edits.sort_by(|a, b| b.0.cmp(&a.0));
-
-    let mut result = source.to_string();
-    for (start, end, replacement) in &edits {
-        // Extend to include the full line (eat leading whitespace and trailing newline).
-        let line_start = source[..*start].rfind('\n').map_or(0, |p| p + 1);
-        let line_end = source[*end..].find('\n').map_or(*end, |p| *end + p + 1);
-        result.replace_range(line_start..line_end, replacement);
-    }
+    let edits = build_call_edits(source, blocks.iter().enumerate(), sig, func_name);
+    let mut result = apply_block_edits(source, edits);
 
     match scope.kind {
         ScopeKind::Module => {
@@ -221,7 +242,7 @@ fn has_import(source: &str, module_stem: &str, func_name: &str) -> bool {
 pub fn apply_refactoring_multi(
     sources: &[&str],
     blocks: &[SourcedBlock],
-    ref_node_positions: &[(usize, usize)],
+    ref_node_positions: &[NodePosition],
     sig: &FunctionSignature,
     func_name: &str,
     scope: &ScopeContext,
@@ -291,25 +312,13 @@ fn replace_blocks_with_calls(
     sig: &FunctionSignature,
     func_name: &str,
 ) -> String {
-    let mut edits: Vec<(usize, usize, String)> = blocks
-        .iter()
-        .map(|(block_idx, block)| {
-            let indent = indent_at_offset(source, block.start_offset);
-            let call = generate_call(sig, *block_idx, func_name);
-            let replacement = format!("{indent}{call}\n");
-            (block.start_offset, block.end_offset, replacement)
-        })
-        .collect();
-
-    edits.sort_by(|a, b| b.0.cmp(&a.0));
-
-    let mut result = source.to_string();
-    for (start, end, replacement) in &edits {
-        let line_start = source[..*start].rfind('\n').map_or(0, |p| p + 1);
-        let line_end = source[*end..].find('\n').map_or(*end, |p| *end + p + 1);
-        result.replace_range(line_start..line_end, replacement);
-    }
-    result
+    let edits = build_call_edits(
+        source,
+        blocks.iter().map(|&(idx, block)| (idx, block)),
+        sig,
+        func_name,
+    );
+    apply_block_edits(source, edits)
 }
 
 /// Create a new FunctionSignature with block_arg_maps/block_return_maps
@@ -357,18 +366,18 @@ fn reindent(text: &str, old_indent: &str, new_indent: &str) -> String {
 fn replace_names_ast(
     body_text: &str,
     source: &str,
-    node_positions: &[(usize, usize)],
+    node_positions: &[NodePosition],
     block_start: usize,
     indent_len: usize,
     rename_map: &HashMap<&str, &str>,
 ) -> String {
     // For each collected node, extract its source text and check the rename map.
     let mut replacements: Vec<(usize, usize, &str)> = Vec::new();
-    for &(src_offset, len) in node_positions {
-        let original_text = &source[src_offset..src_offset + len];
+    for pos in node_positions {
+        let original_text = &source[pos.offset..pos.offset + pos.len];
         if let Some(&new_name) = rename_map.get(original_text) {
-            let body_offset = src_offset - block_start + indent_len;
-            replacements.push((body_offset, len, new_name));
+            let body_offset = pos.offset - block_start + indent_len;
+            replacements.push((body_offset, pos.len, new_name));
         }
     }
 
@@ -384,9 +393,8 @@ fn replace_names_ast(
 
 /// Collect byte positions of all `Expr::Name` and literal nodes from AST statements.
 ///
-/// Returns `Vec<(source_byte_offset, byte_length)>` as owned data that can
-/// outlive the AST borrow.
-pub fn collect_node_positions(stmts: &[Stmt]) -> Vec<(usize, usize)> {
+/// Returns owned `NodePosition` data that can outlive the AST borrow.
+pub fn collect_node_positions(stmts: &[Stmt]) -> Vec<NodePosition> {
     let mut collector = NodeCollector {
         positions: Vec::new(),
     };
@@ -398,8 +406,7 @@ pub fn collect_node_positions(stmts: &[Stmt]) -> Vec<(usize, usize)> {
 
 /// Collects byte positions of all `Expr::Name` and literal nodes in an AST subtree.
 struct NodeCollector {
-    /// (source_byte_offset, byte_length)
-    positions: Vec<(usize, usize)>,
+    positions: Vec<NodePosition>,
 }
 
 impl<'a> Visitor<'a> for NodeCollector {
@@ -416,7 +423,7 @@ impl<'a> Visitor<'a> for NodeCollector {
             let range = expr.range();
             let start = range.start().to_usize();
             let len = range.end().to_usize() - start;
-            self.positions.push((start, len));
+            self.positions.push(NodePosition { offset: start, len });
         }
         walk_expr(self, expr);
     }

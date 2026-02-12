@@ -70,8 +70,8 @@ pub struct ExtractionPlan {
     pub sig: FunctionSignature,
     /// Scope context determining where to place the extracted function.
     pub scope_ctx: ScopeContext,
-    /// Pre-collected AST node positions `(byte_offset, byte_len)` for block 0.
-    pub ref_node_positions: Vec<(usize, usize)>,
+    /// Pre-collected AST node positions for block 0.
+    pub ref_node_positions: Vec<rewrite::NodePosition>,
     /// All store (assigned) variables per block, in order of first store.
     /// `block_stores[i]` corresponds to `blocks[i]`. Used by interactive mode
     /// to offer additional return value candidates.

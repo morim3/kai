@@ -171,13 +171,33 @@ pub fn return_candidates(sig: &FunctionSignature, block_stores: &[Vec<String>]) 
 
 // ── Interactive steps ────────────────────────────────────────────────
 
-/// Step 1: Let the user select which matched blocks to include.
-fn select_blocks(source: &str, blocks: &[MatchedBlock]) -> Result<Vec<usize>> {
-    if blocks.len() <= 2 {
-        return Ok((0..blocks.len()).collect());
+/// Shared interactive block selection: display items, let user toggle, require ≥2.
+fn prompt_block_selection(items: &[String]) -> Result<Vec<usize>> {
+    if items.len() <= 2 {
+        return Ok((0..items.len()).collect());
     }
 
-    eprintln!("\nFound {} matching blocks:", blocks.len());
+    eprintln!("\nFound {} matching blocks:", items.len());
+    for item in items {
+        eprintln!("  {item}");
+    }
+
+    let defaults: Vec<bool> = vec![true; items.len()];
+    let selections = MultiSelect::new()
+        .with_prompt("Select blocks to extract [Space=toggle, Enter=confirm]")
+        .items(items)
+        .defaults(&defaults)
+        .interact()?;
+
+    if selections.len() < 2 {
+        bail!("Need at least 2 blocks selected for extraction.");
+    }
+
+    Ok(selections)
+}
+
+/// Step 1: Let the user select which matched blocks to include.
+fn select_blocks(source: &str, blocks: &[MatchedBlock]) -> Result<Vec<usize>> {
     let items: Vec<String> = blocks
         .iter()
         .enumerate()
@@ -192,38 +212,15 @@ fn select_blocks(source: &str, blocks: &[MatchedBlock]) -> Result<Vec<usize>> {
             )
         })
         .collect();
-
-    for item in &items {
-        eprintln!("  {item}");
-    }
-
-    let defaults: Vec<bool> = vec![true; blocks.len()];
-    let selections = MultiSelect::new()
-        .with_prompt("Select blocks to extract [Space=toggle, Enter=confirm]")
-        .items(&items)
-        .defaults(&defaults)
-        .interact()?;
-
-    if selections.len() < 2 {
-        bail!("Need at least 2 blocks selected for extraction.");
-    }
-
-    Ok(selections)
+    prompt_block_selection(&items)
 }
 
 /// Step 1 (multi-file): Let the user select which matched blocks to include.
-///
-/// Shows file name and line range for each block.
 fn select_sourced_blocks(
     sources: &[&str],
     file_names: &[&str],
     blocks: &[SourcedBlock],
 ) -> Result<Vec<usize>> {
-    if blocks.len() <= 2 {
-        return Ok((0..blocks.len()).collect());
-    }
-
-    eprintln!("\nFound {} matching blocks:", blocks.len());
     let items: Vec<String> = blocks
         .iter()
         .enumerate()
@@ -240,23 +237,7 @@ fn select_sourced_blocks(
             )
         })
         .collect();
-
-    for item in &items {
-        eprintln!("  {item}");
-    }
-
-    let defaults: Vec<bool> = vec![true; blocks.len()];
-    let selections = MultiSelect::new()
-        .with_prompt("Select blocks to extract [Space=toggle, Enter=confirm]")
-        .items(&items)
-        .defaults(&defaults)
-        .interact()?;
-
-    if selections.len() < 2 {
-        bail!("Need at least 2 blocks selected for extraction.");
-    }
-
-    Ok(selections)
+    prompt_block_selection(&items)
 }
 
 /// Step 2: Get a valid function name from the user.
