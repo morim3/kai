@@ -143,7 +143,7 @@ Rustの堅牢なエコシステム、特にPython解析のデファクトスタ�
   識別子を誤置換するバグあり。`Visitor` で `Expr::Name` / `Expr::*Literal` の `TextRange` を収集し
   ピンポイント置換する `replace_names_ast` に置換。
 
-#### Iter 4: 対話モード ✅ (簡素化版) / 🔧 (バリデーション・戻り値追加)
+#### Iter 4: 対話モード ✅ (簡素化版) / 🔧 (バリデーション・戻り値追加は未実装)
 * **方針:** デフォルトは現在と同じ自動モード。`--interactive` (`-i`) で対話モードに切り替え。
 * **アーキテクチャ:** パイプラインを3段階に分割し、AST ボロー問題を解消。
   * `scan::find_matches()` → `Vec<MatchedBlock>` (Stage 1)
@@ -173,12 +173,19 @@ Rustの堅牢なエコシステム、特にPython解析のデファクトスタ�
   * どんなユーザー入力でも SyntaxError が出力されないこと。（未達成）
   * 戻り値を手動追加できること。（未実装）
 
-#### Iter 5: 複数ファイル対応
+#### Iter 5: 複数ファイル対応 ✅
 * **方針:** 複数ファイルにまたがる構造的に同一のブロックを検出し、共通関数として抽出する。
-* **タスク:**
-  1. CLI でディレクトリまたは複数ファイルを指定可能にする。
-  2. ファイル間のマッチング（同一ハッシュのブロックを横断検索）。
-  3. 抽出した関数の配置先ファイルの決定（新規共有モジュール or 既存ファイル）。
-  4. 呼び出し側ファイルへの `import` 文自動挿入。
+* **実装結果:**
+  1. `scan.rs`: `find_matches_with_hash()` でハッシュ+window_size+マッチを返す新API追加。
+     `find_matches_in_file()` で任意ソースを再帰的にスキャン（全スコープ対応）。
+  2. `lib.rs`: `SourcedBlock`（MatchedBlock + source_index）と `plan_extraction_multi()` 追加。
+     クロスファイル時は `ScopeKind::Module` に強制。既存 `plan_extraction` はラッパー化。
+  3. `rewrite.rs`: `generate_import()`, `apply_refactoring_multi()` 追加。
+     ターゲットファイルに関数定義配置、他ファイルに `from <stem> import <func>` 挿入。
+  4. `main.rs`: CLI を `pym A.py B.py C.py START END [--write] [--diff]` 形式に拡張。
+     1ファイルは既存動作と完全互換。対話モード+マルチファイルはエラー。
+* **テスト:** 5つのマルチファイルフィクスチャ追加（multi_simple, multi_with_returns,
+  multi_inside_function, multi_three_files, multi_no_match_in_extra）。全33フィクスチャ通過。
 * **Exit Criteria:**
-  * 複数ファイルに同一構造のブロックがある場合、共通関数に抽出され、各ファイルから正しくimportされること。
+  * 複数ファイルに同一構造のブロックがある場合、共通関数に抽出され、各ファイルから正しくimportされること。✅
+  * 単一ファイルモードの動作が変わらないこと。✅
