@@ -200,3 +200,16 @@ Rustの堅牢なエコシステム、特にPython解析のデファクトスタ�
 * **Exit Criteria:**
   * `pym a.py b.py 1 2 -i` で対話的にブロック選択・リネーム・プレビューができること。✅
   * 非対話モードの動作が変わらないこと。✅
+
+#### Iter 7: 未対応構文の divergence extraction 対応 ✅
+* **方針:** `diff_extract.rs` で not-implemented エラーを返していた構文のうち、実用頻度の高いものを実装する。
+* **実装結果:**
+  1. **内包表記** (ListComp, SetComp, DictComp, Generator): `diff_comprehensions()` ヘルパーで `target`, `iter`, `ifs` を再帰的に diff。
+  2. **FString / TString**: `diff_interpolated_elements()` ヘルパーで `Interpolation` 内の式と `format_spec` を再帰的に diff。
+  3. **Lambda**: `diff_parameters()` ヘルパーでパラメータ名と default 値を diff。`diff_param_names()` で Identifier の Name divergence を手動処理。
+  4. **Match**: `diff_patterns()` 関数で Pattern の 8 バリアント全てを再帰的に diff。subject, guard, body も diff。
+  5. FunctionDef, ClassDef, TypeAlias, IpyEscapeCommand は引き続き not-implemented（ネスト定義やレア構文）。
+* **テスト:** ユニットテスト 13 件追加（23→計23件中の新規13件）、統合フィクスチャ 4 件追加（comprehension, fstring, lambda, match）。全38フィクスチャ通過。
+* **Exit Criteria:**
+  * 内包表記、f-string、lambda、match を含むブロックで正しくパラメータ化されること。✅
+  * 既存テストが全て通過すること。✅

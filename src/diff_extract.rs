@@ -1,5 +1,8 @@
 use anyhow::{Result, bail};
-use ruff_python_ast::{Expr, Stmt};
+use ruff_python_ast::{
+    Comprehension, Expr, FStringPart, InterpolatedStringElement, Parameter, ParameterWithDefault,
+    Pattern, Stmt,
+};
 use ruff_text_size::Ranged;
 
 /// A difference between two structurally equivalent AST nodes.
@@ -140,8 +143,15 @@ fn diff_stmts(a: &Stmt, b: &Stmt, sa: &str, sb: &str, out: &mut Vec<Divergence>)
         (Stmt::ClassDef(_), Stmt::ClassDef(_)) => {
             bail!("divergence extraction not implemented for nested class definitions");
         }
-        (Stmt::Match(_), Stmt::Match(_)) => {
-            bail!("divergence extraction not implemented for match statements");
+        (Stmt::Match(a), Stmt::Match(b)) => {
+            diff_exprs(&a.subject, &b.subject, sa, sb, out)?;
+            for (ca, cb) in a.cases.iter().zip(b.cases.iter()) {
+                diff_patterns(&ca.pattern, &cb.pattern, sa, sb, out)?;
+                if let (Some(ga), Some(gb)) = (&ca.guard, &cb.guard) {
+                    diff_exprs(ga, gb, sa, sb, out)?;
+                }
+                diff_stmt_bodies(&ca.body, &cb.body, sa, sb, out)?;
+            }
         }
         (Stmt::TypeAlias(_), Stmt::TypeAlias(_)) => {
             bail!("divergence extraction not implemented for type alias statements");
@@ -183,13 +193,7 @@ fn diff_expr_slices(
     Ok(())
 }
 
-fn diff_exprs(
-    a: &Expr,
-    b: &Expr,
-    sa: &str,
-    sb: &str,
-    out: &mut Vec<Divergence>,
-) -> Result<()> {
+fn diff_exprs(a: &Expr, b: &Expr, sa: &str, sb: &str, out: &mut Vec<Divergence>) -> Result<()> {
     match (a, b) {
         (Expr::Name(a), Expr::Name(b)) => {
             if a.id != b.id {
@@ -293,26 +297,46 @@ fn diff_exprs(
             diff_exprs(&a.value, &b.value, sa, sb, out)?;
         }
         // Not yet implemented.
-        (Expr::Lambda(_), Expr::Lambda(_)) => {
-            bail!("divergence extraction not implemented for lambda expressions");
+        (Expr::Lambda(a), Expr::Lambda(b)) => {
+            if let (Some(pa), Some(pb)) = (&a.parameters, &b.parameters) {
+                diff_parameters(pa, pb, sa, sb, out)?;
+            }
+            diff_exprs(&a.body, &b.body, sa, sb, out)?;
         }
-        (Expr::ListComp(_), Expr::ListComp(_)) => {
-            bail!("divergence extraction not implemented for list comprehensions");
+        (Expr::ListComp(a), Expr::ListComp(b)) => {
+            diff_exprs(&a.elt, &b.elt, sa, sb, out)?;
+            diff_comprehensions(&a.generators, &b.generators, sa, sb, out)?;
         }
-        (Expr::SetComp(_), Expr::SetComp(_)) => {
-            bail!("divergence extraction not implemented for set comprehensions");
+        (Expr::SetComp(a), Expr::SetComp(b)) => {
+            diff_exprs(&a.elt, &b.elt, sa, sb, out)?;
+            diff_comprehensions(&a.generators, &b.generators, sa, sb, out)?;
         }
-        (Expr::DictComp(_), Expr::DictComp(_)) => {
-            bail!("divergence extraction not implemented for dict comprehensions");
+        (Expr::DictComp(a), Expr::DictComp(b)) => {
+            diff_exprs(&a.key, &b.key, sa, sb, out)?;
+            diff_exprs(&a.value, &b.value, sa, sb, out)?;
+            diff_comprehensions(&a.generators, &b.generators, sa, sb, out)?;
         }
-        (Expr::Generator(_), Expr::Generator(_)) => {
-            bail!("divergence extraction not implemented for generator expressions");
+        (Expr::Generator(a), Expr::Generator(b)) => {
+            diff_exprs(&a.elt, &b.elt, sa, sb, out)?;
+            diff_comprehensions(&a.generators, &b.generators, sa, sb, out)?;
         }
-        (Expr::FString(_), Expr::FString(_)) => {
-            bail!("divergence extraction not implemented for f-string expressions");
+        (Expr::FString(a), Expr::FString(b)) => {
+            for (pa, pb) in a.value.iter().zip(b.value.iter()) {
+                match (pa, pb) {
+                    (FStringPart::FString(fa), FStringPart::FString(fb)) => {
+                        diff_interpolated_elements(&fa.elements, &fb.elements, sa, sb, out)?;
+                    }
+                    (FStringPart::Literal(_), FStringPart::Literal(_)) => {
+                        // Literal string parts — structural difference handled by normalizer
+                    }
+                    _ => bail!("mismatched f-string parts in structurally identical blocks"),
+                }
+            }
         }
-        (Expr::TString(_), Expr::TString(_)) => {
-            bail!("divergence extraction not implemented for t-string expressions");
+        (Expr::TString(a), Expr::TString(b)) => {
+            for (ta, tb) in a.value.iter().zip(b.value.iter()) {
+                diff_interpolated_elements(&ta.elements, &tb.elements, sa, sb, out)?;
+            }
         }
         (Expr::IpyEscapeCommand(_), Expr::IpyEscapeCommand(_)) => {
             bail!("divergence extraction not implemented for IPython escape commands");
@@ -320,6 +344,159 @@ fn diff_exprs(
         // Mismatched variants — should not happen with structurally identical blocks.
         _ => {
             bail!("mismatched expression types in structurally identical blocks");
+        }
+    }
+    Ok(())
+}
+
+/// Diff two comprehension generator lists (used by ListComp, SetComp, DictComp, Generator).
+fn diff_comprehensions(
+    a: &[Comprehension],
+    b: &[Comprehension],
+    sa: &str,
+    sb: &str,
+    out: &mut Vec<Divergence>,
+) -> Result<()> {
+    for (ca, cb) in a.iter().zip(b.iter()) {
+        diff_exprs(&ca.target, &cb.target, sa, sb, out)?;
+        diff_exprs(&ca.iter, &cb.iter, sa, sb, out)?;
+        diff_expr_slices(&ca.ifs, &cb.ifs, sa, sb, out)?;
+    }
+    Ok(())
+}
+
+/// Diff two interpolated string element sequences (used by FString and TString).
+fn diff_interpolated_elements(
+    a: &[InterpolatedStringElement],
+    b: &[InterpolatedStringElement],
+    sa: &str,
+    sb: &str,
+    out: &mut Vec<Divergence>,
+) -> Result<()> {
+    for (ea, eb) in a.iter().zip(b.iter()) {
+        match (ea, eb) {
+            (
+                InterpolatedStringElement::Interpolation(ia),
+                InterpolatedStringElement::Interpolation(ib),
+            ) => {
+                diff_exprs(&ia.expression, &ib.expression, sa, sb, out)?;
+                if let (Some(fa), Some(fb)) = (&ia.format_spec, &ib.format_spec) {
+                    diff_interpolated_elements(&fa.elements, &fb.elements, sa, sb, out)?;
+                }
+            }
+            (InterpolatedStringElement::Literal(_), InterpolatedStringElement::Literal(_)) => {
+                // Literal parts — structural difference handled by normalizer
+            }
+            _ => bail!("mismatched interpolated string elements in structurally identical blocks"),
+        }
+    }
+    Ok(())
+}
+
+/// Diff parameter default values and names across two `Parameters` structs (used by Lambda).
+fn diff_parameters(
+    a: &ruff_python_ast::Parameters,
+    b: &ruff_python_ast::Parameters,
+    sa: &str,
+    sb: &str,
+    out: &mut Vec<Divergence>,
+) -> Result<()> {
+    let diff_param_with_defaults = |a: &[ParameterWithDefault],
+                                    b: &[ParameterWithDefault],
+                                    out: &mut Vec<Divergence>|
+     -> Result<()> {
+        for (pa, pb) in a.iter().zip(b.iter()) {
+            diff_param_names(&pa.parameter, &pb.parameter, out);
+            if let (Some(da), Some(db)) = (&pa.default, &pb.default) {
+                diff_exprs(da, db, sa, sb, out)?;
+            }
+        }
+        Ok(())
+    };
+
+    diff_param_with_defaults(&a.posonlyargs, &b.posonlyargs, out)?;
+    diff_param_with_defaults(&a.args, &b.args, out)?;
+    if let (Some(va), Some(vb)) = (&a.vararg, &b.vararg) {
+        diff_param_names(va, vb, out);
+    }
+    diff_param_with_defaults(&a.kwonlyargs, &b.kwonlyargs, out)?;
+    if let (Some(ka), Some(kb)) = (&a.kwarg, &b.kwarg) {
+        diff_param_names(ka, kb, out);
+    }
+    Ok(())
+}
+
+/// Emit a Name divergence if two parameters have different names.
+fn diff_param_names(a: &Parameter, b: &Parameter, out: &mut Vec<Divergence>) {
+    if a.name.as_str() != b.name.as_str() {
+        out.push(Divergence::Name(a.name.to_string(), b.name.to_string()));
+    }
+}
+
+/// Recursively diff two `Pattern` nodes (used by Match statements).
+fn diff_patterns(
+    a: &Pattern,
+    b: &Pattern,
+    sa: &str,
+    sb: &str,
+    out: &mut Vec<Divergence>,
+) -> Result<()> {
+    match (a, b) {
+        (Pattern::MatchValue(a), Pattern::MatchValue(b)) => {
+            diff_exprs(&a.value, &b.value, sa, sb, out)?;
+        }
+        (Pattern::MatchSingleton(_), Pattern::MatchSingleton(_)) => {
+            // None / True / False — no sub-expressions to diff
+        }
+        (Pattern::MatchSequence(a), Pattern::MatchSequence(b)) => {
+            for (pa, pb) in a.patterns.iter().zip(b.patterns.iter()) {
+                diff_patterns(pa, pb, sa, sb, out)?;
+            }
+        }
+        (Pattern::MatchMapping(a), Pattern::MatchMapping(b)) => {
+            diff_expr_slices(&a.keys, &b.keys, sa, sb, out)?;
+            for (pa, pb) in a.patterns.iter().zip(b.patterns.iter()) {
+                diff_patterns(pa, pb, sa, sb, out)?;
+            }
+            if let (Some(ra), Some(rb)) = (&a.rest, &b.rest)
+                && ra.as_str() != rb.as_str()
+            {
+                out.push(Divergence::Name(ra.to_string(), rb.to_string()));
+            }
+        }
+        (Pattern::MatchClass(a), Pattern::MatchClass(b)) => {
+            diff_exprs(&a.cls, &b.cls, sa, sb, out)?;
+            for (pa, pb) in a.arguments.patterns.iter().zip(b.arguments.patterns.iter()) {
+                diff_patterns(pa, pb, sa, sb, out)?;
+            }
+            for (ka, kb) in a.arguments.keywords.iter().zip(b.arguments.keywords.iter()) {
+                diff_patterns(&ka.pattern, &kb.pattern, sa, sb, out)?;
+            }
+        }
+        (Pattern::MatchStar(a), Pattern::MatchStar(b)) => {
+            if let (Some(na), Some(nb)) = (&a.name, &b.name)
+                && na.as_str() != nb.as_str()
+            {
+                out.push(Divergence::Name(na.to_string(), nb.to_string()));
+            }
+        }
+        (Pattern::MatchAs(a), Pattern::MatchAs(b)) => {
+            if let (Some(pa), Some(pb)) = (&a.pattern, &b.pattern) {
+                diff_patterns(pa, pb, sa, sb, out)?;
+            }
+            if let (Some(na), Some(nb)) = (&a.name, &b.name)
+                && na.as_str() != nb.as_str()
+            {
+                out.push(Divergence::Name(na.to_string(), nb.to_string()));
+            }
+        }
+        (Pattern::MatchOr(a), Pattern::MatchOr(b)) => {
+            for (pa, pb) in a.patterns.iter().zip(b.patterns.iter()) {
+                diff_patterns(pa, pb, sa, sb, out)?;
+            }
+        }
+        _ => {
+            bail!("mismatched pattern types in structurally identical blocks");
         }
     }
     Ok(())
@@ -439,8 +616,14 @@ mod tests {
         let a = parse_stmts(src_a);
         let b = parse_stmts(src_b);
         let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert!(divs.iter().any(|d| *d == Divergence::Name("file_a".into(), "file_b".into())));
-        assert!(divs.iter().any(|d| *d == Divergence::Name("f".into(), "g".into())));
+        assert!(
+            divs.iter()
+                .any(|d| *d == Divergence::Name("file_a".into(), "file_b".into()))
+        );
+        assert!(
+            divs.iter()
+                .any(|d| *d == Divergence::Name("f".into(), "g".into()))
+        );
     }
 
     #[test]
@@ -450,8 +633,14 @@ mod tests {
         let a = parse_stmts(src_a);
         let b = parse_stmts(src_b);
         let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert!(divs.iter().any(|d| *d == Divergence::Name("func_a".into(), "func_b".into())));
-        assert!(divs.iter().any(|d| *d == Divergence::Name("x".into(), "y".into())));
+        assert!(
+            divs.iter()
+                .any(|d| *d == Divergence::Name("func_a".into(), "func_b".into()))
+        );
+        assert!(
+            divs.iter()
+                .any(|d| *d == Divergence::Name("x".into(), "y".into()))
+        );
     }
 
     #[test]
@@ -461,7 +650,10 @@ mod tests {
         let a = parse_stmts(src_a);
         let b = parse_stmts(src_b);
         let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert!(divs.iter().any(|d| *d == Divergence::Name("x".into(), "y".into())));
+        assert!(
+            divs.iter()
+                .any(|d| *d == Divergence::Name("x".into(), "y".into()))
+        );
     }
 
     #[test]
@@ -475,12 +667,136 @@ mod tests {
     }
 
     #[test]
-    fn not_implemented_for_match() {
-        let src_a = "match x:\n    case 1:\n        pass";
-        let src_b = "match y:\n    case 2:\n        pass";
+    fn divergence_in_list_comprehension() {
+        let src_a = "result = [x + 1 for x in items]";
+        let src_b = "result = [y + 2 for y in data]";
         let a = parse_stmts(src_a);
         let b = parse_stmts(src_b);
-        let err = extract_divergences(&a, &b, src_a, src_b).unwrap_err();
-        assert!(err.to_string().contains("not implemented"), "{err}");
+        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+        // elt: x vs y, literal: 1 vs 2, target: x vs y, iter: items vs data
+        assert!(divs.contains(&Divergence::Name("x".into(), "y".into())));
+        assert!(divs.contains(&Divergence::Literal("1".into(), "2".into())));
+        assert!(divs.contains(&Divergence::Name("items".into(), "data".into())));
+    }
+
+    #[test]
+    fn divergence_in_dict_comprehension() {
+        let src_a = "d = {k: v for k, v in pairs_a}";
+        let src_b = "d = {k: v for k, v in pairs_b}";
+        let a = parse_stmts(src_a);
+        let b = parse_stmts(src_b);
+        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+        assert_eq!(
+            divs,
+            vec![Divergence::Name("pairs_a".into(), "pairs_b".into())]
+        );
+    }
+
+    #[test]
+    fn divergence_in_generator_expression() {
+        let src_a = "s = sum(x * 2 for x in items)";
+        let src_b = "s = sum(y * 3 for y in data)";
+        let a = parse_stmts(src_a);
+        let b = parse_stmts(src_b);
+        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+        assert!(divs.contains(&Divergence::Name("x".into(), "y".into())));
+        assert!(divs.contains(&Divergence::Literal("2".into(), "3".into())));
+        assert!(divs.contains(&Divergence::Name("items".into(), "data".into())));
+    }
+
+    #[test]
+    fn divergence_in_comprehension_with_if() {
+        let src_a = "[x for x in items if x > 0]";
+        let src_b = "[y for y in data if y > 0]";
+        let a = parse_stmts(src_a);
+        let b = parse_stmts(src_b);
+        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+        assert!(divs.contains(&Divergence::Name("x".into(), "y".into())));
+        assert!(divs.contains(&Divergence::Name("items".into(), "data".into())));
+    }
+
+    #[test]
+    fn divergence_in_fstring() {
+        let src_a = "s = f\"hello {name}\"";
+        let src_b = "s = f\"hello {user}\"";
+        let a = parse_stmts(src_a);
+        let b = parse_stmts(src_b);
+        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+        assert!(divs.contains(&Divergence::Name("name".into(), "user".into())));
+    }
+
+    #[test]
+    fn divergence_in_fstring_multiple_exprs() {
+        let src_a = "s = f\"{a} and {b}\"";
+        let src_b = "s = f\"{x} and {y}\"";
+        let a = parse_stmts(src_a);
+        let b = parse_stmts(src_b);
+        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+        assert_eq!(
+            divs,
+            vec![
+                Divergence::Name("a".into(), "x".into()),
+                Divergence::Name("b".into(), "y".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn divergence_in_lambda() {
+        let src_a = "f = lambda x: x + 1";
+        let src_b = "f = lambda y: y + 2";
+        let a = parse_stmts(src_a);
+        let b = parse_stmts(src_b);
+        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+        assert!(divs.contains(&Divergence::Name("x".into(), "y".into())));
+        assert!(divs.contains(&Divergence::Literal("1".into(), "2".into())));
+    }
+
+    #[test]
+    fn divergence_in_lambda_with_default() {
+        let src_a = "f = lambda x, y=10: x + y";
+        let src_b = "f = lambda a, b=20: a + b";
+        let a = parse_stmts(src_a);
+        let b = parse_stmts(src_b);
+        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+        assert!(divs.contains(&Divergence::Name("x".into(), "a".into())));
+        assert!(divs.contains(&Divergence::Name("y".into(), "b".into())));
+        assert!(divs.contains(&Divergence::Literal("10".into(), "20".into())));
+    }
+
+    #[test]
+    fn divergence_in_match_statement() {
+        let src_a = "match cmd_a:\n    case 1:\n        x = 10";
+        let src_b = "match cmd_b:\n    case 2:\n        y = 20";
+        let a = parse_stmts(src_a);
+        let b = parse_stmts(src_b);
+        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+        assert!(divs.contains(&Divergence::Name("cmd_a".into(), "cmd_b".into())));
+        assert!(divs.contains(&Divergence::Literal("1".into(), "2".into())));
+        assert!(divs.contains(&Divergence::Name("x".into(), "y".into())));
+        assert!(divs.contains(&Divergence::Literal("10".into(), "20".into())));
+    }
+
+    #[test]
+    fn divergence_in_match_with_as_pattern() {
+        let src_a = "match val:\n    case x as result_a:\n        pass";
+        let src_b = "match val:\n    case y as result_b:\n        pass";
+        let a = parse_stmts(src_a);
+        let b = parse_stmts(src_b);
+        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+        assert!(divs.contains(&Divergence::Name("result_a".into(), "result_b".into())));
+    }
+
+    #[test]
+    fn divergence_in_nested_comprehension() {
+        let src_a = "result = [x + y for x in items_a for y in items_b]";
+        let src_b = "result = [a + b for a in data_a for b in data_b]";
+        let a = parse_stmts(src_a);
+        let b = parse_stmts(src_b);
+        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+        assert!(divs.contains(&Divergence::Name("x".into(), "a".into())));
+        assert!(divs.contains(&Divergence::Name("y".into(), "b".into())));
+        assert!(divs.contains(&Divergence::Name("items_a".into(), "data_a".into())));
+        assert!(divs.contains(&Divergence::Name("items_b".into(), "data_b".into())));
     }
 }
