@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Write;
 
 use ruff_python_ast::visitor::{Visitor, walk_expr};
 use ruff_python_ast::{Expr, Stmt};
@@ -76,7 +77,7 @@ pub fn generate_function_def(
     // Add return statement if there are outputs.
     if !sig.returns.is_empty() {
         let return_expr = sig.returns.join(", ");
-        func.push_str(&format!("{body_indent}return {return_expr}\n"));
+        writeln!(func, "{body_indent}return {return_expr}").unwrap();
     }
 
     func
@@ -192,9 +193,7 @@ pub fn apply_refactoring(
             let class_offset = scope.class_def_offset.unwrap_or(0);
             debug_assert!(
                 class_offset <= earliest_edit_offset,
-                "class insertion point ({}) must be at or before earliest edit ({})",
-                class_offset,
-                earliest_edit_offset
+                "class insertion point ({class_offset}) must be at or before earliest edit ({earliest_edit_offset})"
             );
             let insert_offset = result[..class_offset].rfind('\n').map_or(0, |p| p + 1);
             result.insert_str(insert_offset, &format!("{func_def}\n"));
@@ -212,7 +211,7 @@ pub fn unified_diff(original: &str, modified: &str, filename: &str) -> String {
         .header(&format!("a/{filename}"), &format!("b/{filename}"))
         .iter_hunks()
     {
-        output.push_str(&format!("{hunk}"));
+        write!(output, "{hunk}").unwrap();
     }
     output
 }

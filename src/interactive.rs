@@ -103,11 +103,8 @@ pub fn validate_rename_map(sig: &FunctionSignature) -> Result<()> {
             && other_original != original
         {
             bail!(
-                "Variables '{}' and '{}' both renamed to '{}' \
-                 — this would merge two different variables into one",
-                other_original,
-                original,
-                new_name
+                "Variables '{other_original}' and '{original}' both renamed to '{new_name}' \
+                 — this would merge two different variables into one"
             );
         }
         reverse.insert(new_name, original);
@@ -118,8 +115,7 @@ pub fn validate_rename_map(sig: &FunctionSignature) -> Result<()> {
         for ret_b in sig.returns.iter().skip(i + 1) {
             if ret_a == ret_b {
                 bail!(
-                    "Duplicate return name '{}' — each return value must have a unique name",
-                    ret_a
+                    "Duplicate return name '{ret_a}' — each return value must have a unique name"
                 );
             }
         }
@@ -133,11 +129,7 @@ pub fn validate_rename_map(sig: &FunctionSignature) -> Result<()> {
 /// Format a block preview (first N chars of each line, joined by " / ").
 fn block_preview(source: &str, block: &MatchedBlock, max_len: usize) -> String {
     let text = &source[block.start_offset..block.end_offset];
-    let preview: String = text
-        .lines()
-        .map(|l| l.trim())
-        .collect::<Vec<_>>()
-        .join(" / ");
+    let preview: String = text.lines().map(str::trim).collect::<Vec<_>>().join(" / ");
     if preview.len() > max_len {
         let truncate_at = preview
             .char_indices()
@@ -158,12 +150,11 @@ pub fn return_candidates(sig: &FunctionSignature, block_stores: &[Vec<String>]) 
     let existing: std::collections::HashSet<&str> = sig
         .block_return_maps
         .first()
-        .map(|m| m.iter().map(|s| s.as_str()).collect())
+        .map(|m| m.iter().map(std::string::String::as_str).collect())
         .unwrap_or_default();
 
-    let ref_stores = match block_stores.first() {
-        Some(s) => s,
-        None => return Vec::new(),
+    let Some(ref_stores) = block_stores.first() else {
+        return Vec::new();
     };
 
     ref_stores
@@ -276,7 +267,7 @@ fn rename_collection(
     for (i, name) in names.iter().enumerate() {
         let values: Vec<&str> = per_block_maps
             .iter()
-            .map(|m| m.get(i).map(|s| s.as_str()).unwrap_or("?"))
+            .map(|m| m.get(i).map_or("?", std::string::String::as_str))
             .collect();
         eprintln!("  {name}: {}", values.join(" | "));
     }
@@ -379,7 +370,7 @@ fn add_returns(sig: &mut FunctionSignature, block_stores: &[Vec<String>]) -> Res
         .map(|&i| {
             let values: Vec<&str> = block_stores
                 .iter()
-                .map(|stores| stores.get(i).map(|s| s.as_str()).unwrap_or("?"))
+                .map(|stores| stores.get(i).map_or("?", std::string::String::as_str))
                 .collect();
             format!("{}: {}", ref_stores[i], values.join(" | "))
         })

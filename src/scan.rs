@@ -268,9 +268,8 @@ pub fn find_matches_in_file(
     target_hash: u64,
     window_size: usize,
 ) -> Vec<MatchedBlock> {
-    let parsed = match crate::parse_python(source) {
-        Ok(p) => p,
-        Err(_) => return Vec::new(),
+    let Ok(parsed) = crate::parse_python(source) else {
+        return Vec::new();
     };
     let top_body = &parsed.syntax().body;
     let mut matches = Vec::new();

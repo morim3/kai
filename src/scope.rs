@@ -129,9 +129,8 @@ impl FunctionSignature {
 /// Returns a `Vec<Vec<String>>` where `result[param_idx][block_idx]` is the literal
 /// value for that parameter in that block.
 fn collect_literal_params(all_divergences: &[Vec<Divergence>]) -> Vec<Vec<String>> {
-    let first_divs = match all_divergences.first() {
-        Some(d) => d,
-        None => return Vec::new(),
+    let Some(first_divs) = all_divergences.first() else {
+        return Vec::new();
     };
 
     let mut params: Vec<Vec<String>> = Vec::new();
@@ -150,7 +149,7 @@ fn collect_literal_params(all_divergences: &[Vec<Divergence>]) -> Vec<Vec<String
                     .iter()
                     .filter_map(|od| match od {
                         Divergence::Literal(_, v) => Some(v),
-                        _ => None,
+                        Divergence::Name(..) => None,
                     })
                     .nth(current_lit_idx)
                     .cloned()

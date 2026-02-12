@@ -51,8 +51,7 @@ fn parse_positional(args: &[String]) -> Result<(Vec<String>, usize, usize)> {
 fn file_stem(path: &str) -> String {
     Path::new(path)
         .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.to_string())
+        .map_or_else(|| path.to_string(), |s| s.to_string_lossy().to_string())
 }
 
 fn main() -> Result<()> {
@@ -91,8 +90,8 @@ fn main() -> Result<()> {
             .iter()
             .map(std::fs::read_to_string)
             .collect::<Result<Vec<_>, _>>()?;
-        let source_refs: Vec<&str> = sources.iter().map(|s| s.as_str()).collect();
-        let file_refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
+        let source_refs: Vec<&str> = sources.iter().map(std::string::String::as_str).collect();
+        let file_refs: Vec<&str> = files.iter().map(std::string::String::as_str).collect();
         let target_stem = file_stem(&files[0]);
 
         if interactive {

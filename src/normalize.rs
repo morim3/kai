@@ -64,6 +64,7 @@ pub fn select_stmts<'a>(
 }
 
 /// Convert a byte offset to a 1-based line number.
+#[allow(clippy::naive_bytecount)]
 pub fn line_of_offset(source: &str, offset: usize) -> usize {
     let offset = offset.min(source.len());
     source.as_bytes()[..offset]
