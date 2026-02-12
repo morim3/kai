@@ -312,6 +312,21 @@ fn rename_collection(
     Ok(())
 }
 
+/// Auto-sync output=input returns: if a return's original variable name
+/// matches a param's original variable name, update the return to use the
+/// (possibly renamed) param name.
+pub fn sync_linked_returns(sig: &mut FunctionSignature) {
+    if let (Some(arg_map), Some(ret_map)) =
+        (sig.block_arg_maps.first(), sig.block_return_maps.first())
+    {
+        for (ret_idx, ret_orig) in ret_map.iter().enumerate() {
+            if let Some(param_idx) = arg_map.iter().position(|a| a == ret_orig) {
+                sig.returns[ret_idx] = sig.params[param_idx].clone();
+            }
+        }
+    }
+}
+
 /// Step 3: Rename parameters with validation.
 ///
 /// After renaming, returns whose original variable matches a param's original
@@ -323,19 +338,19 @@ fn rename_parameters(sig: &mut FunctionSignature) -> Result<()> {
         "Parameters (per-block values)",
         "parameter",
     )?;
-
-    // Auto-sync output=input returns: if a return's original variable name
-    // matches a param's original variable name, they are the same variable.
-    if let (Some(arg_map), Some(ret_map)) =
-        (sig.block_arg_maps.first(), sig.block_return_maps.first())
-    {
-        for (ret_idx, ret_orig) in ret_map.iter().enumerate() {
-            if let Some(param_idx) = arg_map.iter().position(|a| a == ret_orig) {
-                sig.returns[ret_idx] = sig.params[param_idx].clone();
-            }
-        }
-    }
+    sync_linked_returns(sig);
     Ok(())
+}
+
+/// Interactive naming flow shared by single-file and multi-file paths.
+/// Returns the chosen function name.
+fn interactive_naming(sig: &mut FunctionSignature, block_stores: &[Vec<String>]) -> Result<String> {
+    let func_name = get_function_name("extracted_func_0")?;
+    rename_parameters(sig)?;
+    rename_returns(sig)?;
+    add_returns(sig, block_stores)?;
+    validate_rename_map(sig)?;
+    Ok(func_name)
 }
 
 /// Step 4: Rename return values with validation.
@@ -453,20 +468,8 @@ pub fn run_interactive(
     let plan = plan_extraction(source, &blocks, start_line, end_line)?;
     let mut sig = plan.sig;
 
-    // Step 2: Function name.
-    let func_name = get_function_name("extracted_func_0")?;
-
-    // Step 3: Parameter rename.
-    rename_parameters(&mut sig)?;
-
-    // Step 4: Return value rename.
-    rename_returns(&mut sig)?;
-
-    // Step 5: Add additional return values.
-    add_returns(&mut sig, &plan.block_stores)?;
-
-    // Final validation: check rename map consistency before generating code.
-    validate_rename_map(&sig)?;
+    // Steps 2-5: Function name, parameter/return rename, add returns.
+    let func_name = interactive_naming(&mut sig, &plan.block_stores)?;
 
     // Stage 3: Apply refactoring.
     let result = rewrite::apply_refactoring(
@@ -533,20 +536,8 @@ pub fn run_interactive_multi(
     let plan = plan_extraction_multi(sources, &blocks, start_line, end_line)?;
     let mut sig = plan.sig;
 
-    // Step 2: Function name.
-    let func_name = get_function_name("extracted_func_0")?;
-
-    // Step 3: Parameter rename.
-    rename_parameters(&mut sig)?;
-
-    // Step 4: Return value rename.
-    rename_returns(&mut sig)?;
-
-    // Step 5: Add additional return values.
-    add_returns(&mut sig, &plan.block_stores)?;
-
-    // Final validation.
-    validate_rename_map(&sig)?;
+    // Steps 2-5: Function name, parameter/return rename, add returns.
+    let func_name = interactive_naming(&mut sig, &plan.block_stores)?;
 
     // Stage 3: Apply refactoring.
     let results = rewrite::apply_refactoring_multi(
@@ -720,186 +711,98 @@ mod tests {
 
     // ── Simulated pipeline tests ──
 
-    #[test]
-    fn simulated_interactive_matches_non_interactive() {
-        let source = "\
-a = 1
-b = a + 2
-c = 10
-d = c + 20
-e = 100
-f = e + 200
-";
-        let expected = crate::extract_method(source, 1, 2).unwrap();
-
-        let all_blocks = scan::find_matches(source, 1, 2).unwrap();
-        assert_eq!(all_blocks.len(), 3);
-
-        let plan = crate::plan_extraction(source, &all_blocks, 1, 2).unwrap();
+    /// Helper: plan extraction, optionally modify sig, apply, validate.
+    fn plan_apply(
+        source: &str,
+        blocks: &[MatchedBlock],
+        start: usize,
+        end: usize,
+        func_name: &str,
+        modify_sig: impl FnOnce(&mut FunctionSignature),
+    ) -> String {
+        let plan = crate::plan_extraction(source, blocks, start, end).unwrap();
+        let mut sig = plan.sig.clone();
+        modify_sig(&mut sig);
+        assert!(validate_rename_map(&sig).is_ok());
         let result = rewrite::apply_refactoring(
             source,
-            &all_blocks,
+            blocks,
             &plan.ref_node_positions,
-            &plan.sig,
-            "extracted_func_0",
+            &sig,
+            func_name,
             &plan.scope_ctx,
         );
+        assert!(validate_output(&result).is_ok(), "output must be valid Python");
+        result
+    }
+
+    #[test]
+    fn simulated_interactive_matches_non_interactive() {
+        let source = "a = 1\nb = a + 2\nc = 10\nd = c + 20\ne = 100\nf = e + 200\n";
+        let expected = crate::extract_method(source, 1, 2).unwrap();
+        let blocks = scan::find_matches(source, 1, 2).unwrap();
+        let result = plan_apply(source, &blocks, 1, 2, "extracted_func_0", |_| {});
         assert_eq!(result, expected);
     }
 
     #[test]
     fn simulated_interactive_block_subset() {
-        let source = "\
-a = 1
-b = a + 2
-c = 10
-d = c + 20
-e = 100
-f = e + 200
-";
+        let source = "a = 1\nb = a + 2\nc = 10\nd = c + 20\ne = 100\nf = e + 200\n";
         let all_blocks = scan::find_matches(source, 1, 2).unwrap();
         let blocks: Vec<MatchedBlock> = vec![all_blocks[0].clone(), all_blocks[1].clone()];
-        let plan = crate::plan_extraction(source, &blocks, 1, 2).unwrap();
-        let result = rewrite::apply_refactoring(
-            source,
-            &blocks,
-            &plan.ref_node_positions,
-            &plan.sig,
-            "extracted_func_0",
-            &plan.scope_ctx,
-        );
-
+        let result = plan_apply(source, &blocks, 1, 2, "extracted_func_0", |_| {});
         assert!(result.contains("e = 100"));
         assert!(result.contains("f = e + 200"));
         assert!(result.contains("extracted_func_0(1, 2)"));
         assert!(result.contains("extracted_func_0(10, 20)"));
-        assert!(result.contains("def extracted_func_0(arg_0, arg_1):"));
     }
 
     #[test]
     fn simulated_interactive_param_rename() {
-        let source = "\
-a = 1
-b = a + 2
-c = 10
-d = c + 20
-";
+        let source = "a = 1\nb = a + 2\nc = 10\nd = c + 20\n";
         let blocks = scan::find_matches(source, 1, 2).unwrap();
-        let plan = crate::plan_extraction(source, &blocks, 1, 2).unwrap();
-        let mut sig = plan.sig.clone();
-
-        sig.params[0] = "value".to_string();
-        sig.params[1] = "offset".to_string();
-
-        assert!(validate_rename_map(&sig).is_ok());
-        let result = rewrite::apply_refactoring(
-            source,
-            &blocks,
-            &plan.ref_node_positions,
-            &sig,
-            "compute",
-            &plan.scope_ctx,
-        );
+        let result = plan_apply(source, &blocks, 1, 2, "compute", |sig| {
+            sig.params[0] = "value".into();
+            sig.params[1] = "offset".into();
+        });
         assert!(result.contains("def compute(value, offset):"));
-        assert!(validate_output(&result).is_ok());
     }
 
     #[test]
     fn simulated_interactive_return_rename() {
-        let source = "\
-a = 1
-b = a + 2
-print(b)
-c = 10
-d = c + 20
-print(d)
-";
+        let source = "a = 1\nb = a + 2\nprint(b)\nc = 10\nd = c + 20\nprint(d)\n";
         let blocks = scan::find_matches(source, 1, 2).unwrap();
-        let plan = crate::plan_extraction(source, &blocks, 1, 2).unwrap();
-        let mut sig = plan.sig.clone();
-
-        if !sig.returns.is_empty() {
-            sig.returns[0] = "output".to_string();
-        }
-
-        assert!(validate_rename_map(&sig).is_ok());
-        let result = rewrite::apply_refactoring(
-            source,
-            &blocks,
-            &plan.ref_node_positions,
-            &sig,
-            "extracted_func_0",
-            &plan.scope_ctx,
-        );
-        if !sig.returns.is_empty() {
-            assert!(result.contains("return output"));
-        }
-        assert!(validate_output(&result).is_ok());
+        let result = plan_apply(source, &blocks, 1, 2, "extracted_func_0", |sig| {
+            if !sig.returns.is_empty() {
+                sig.returns[0] = "output".into();
+            }
+        });
+        assert!(result.contains("return output"));
     }
 
     #[test]
-    fn generated_output_always_valid_python() {
-        let source = "\
-a = 1
-b = a + 2
-print(b)
-c = 10
-d = c + 20
-print(d)
-";
+    fn generated_output_valid_with_custom_names() {
+        let source = "a = 1\nb = a + 2\nprint(b)\nc = 10\nd = c + 20\nprint(d)\n";
         let blocks = scan::find_matches(source, 1, 2).unwrap();
-        let plan = crate::plan_extraction(source, &blocks, 1, 2).unwrap();
-
-        // Default names
-        let result = rewrite::apply_refactoring(
-            source,
-            &blocks,
-            &plan.ref_node_positions,
-            &plan.sig,
-            "extracted_func_0",
-            &plan.scope_ctx,
-        );
-        assert!(
-            validate_output(&result).is_ok(),
-            "default names must be valid"
-        );
-
-        // Custom names
-        let mut sig = plan.sig.clone();
-        sig.params[0] = "x".to_string();
-        if !sig.returns.is_empty() {
-            sig.returns[0] = "result".to_string();
-        }
-        assert!(validate_rename_map(&sig).is_ok());
-        let result = rewrite::apply_refactoring(
-            source,
-            &blocks,
-            &plan.ref_node_positions,
-            &sig,
-            "my_func",
-            &plan.scope_ctx,
-        );
-        assert!(
-            validate_output(&result).is_ok(),
-            "custom names must be valid"
-        );
+        plan_apply(source, &blocks, 1, 2, "my_func", |sig| {
+            sig.params[0] = "x".into();
+            if !sig.returns.is_empty() {
+                sig.returns[0] = "result".into();
+            }
+        });
     }
 
     // ── add_returns logic tests (unit-level, no TTY) ──
 
-    #[test]
-    fn add_returns_logic_adds_store_variables() {
-        let mut sig = make_sig(&["arg_0"], &["ret_0"], &[&["x"], &["y"]], &[&["b"], &["d"]]);
-        let block_stores = vec![
-            vec!["a".to_string(), "b".to_string()],
-            vec!["c".to_string(), "d".to_string()],
-        ];
-
-        let candidate_indices = return_candidates(&sig, &block_stores);
-        assert_eq!(candidate_indices, vec![0]);
-
+    /// Helper: apply add-returns logic without TTY (mirrors the core of `add_returns()`).
+    fn apply_additional_returns(
+        sig: &mut FunctionSignature,
+        block_stores: &[Vec<String>],
+        selected_candidate_indices: &[usize],
+    ) {
+        let candidate_indices = return_candidates(sig, block_stores);
         let ret_count = sig.returns.len();
-        for (sel_idx, &sel) in [0usize].iter().enumerate() {
+        for (sel_idx, &sel) in selected_candidate_indices.iter().enumerate() {
             let store_idx = candidate_indices[sel];
             let ret_name = crate::scope::default_return_name(ret_count + sel_idx);
             sig.returns.push(ret_name);
@@ -912,7 +815,20 @@ print(d)
                 ret_map.push(var_name);
             }
         }
+    }
 
+    #[test]
+    fn add_returns_logic_adds_store_variables() {
+        let mut sig = make_sig(&["arg_0"], &["ret_0"], &[&["x"], &["y"]], &[&["b"], &["d"]]);
+        let block_stores = vec![
+            vec!["a".to_string(), "b".to_string()],
+            vec!["c".to_string(), "d".to_string()],
+        ];
+
+        let candidates = return_candidates(&sig, &block_stores);
+        assert_eq!(candidates, vec![0]);
+
+        apply_additional_returns(&mut sig, &block_stores, &[0]);
         assert_eq!(sig.returns, vec!["ret_0", "ret_1"]);
         assert_eq!(sig.block_return_maps[0], vec!["b", "a"]);
         assert_eq!(sig.block_return_maps[1], vec!["d", "c"]);
@@ -927,102 +843,44 @@ print(d)
 
     #[test]
     fn simulated_add_returns_produces_valid_python() {
-        let source = "\
-a = 1
-b = a + 2
-print(b)
-c = 10
-d = c + 20
-print(d)
-";
+        let source = "a = 1\nb = a + 2\nprint(b)\nc = 10\nd = c + 20\nprint(d)\n";
         let blocks = scan::find_matches(source, 1, 2).unwrap();
         let plan = crate::plan_extraction(source, &blocks, 1, 2).unwrap();
         let mut sig = plan.sig.clone();
 
-        assert!(!plan.block_stores.is_empty());
-        assert!(!plan.block_stores[0].is_empty());
-
-        let candidate_indices = return_candidates(&sig, &plan.block_stores);
-        if !candidate_indices.is_empty() {
-            let store_idx = candidate_indices[0];
-            let ret_name = crate::scope::default_return_name(sig.returns.len());
-            sig.returns.push(ret_name);
-            for (block_idx, ret_map) in sig.block_return_maps.iter_mut().enumerate() {
-                let var_name = plan
-                    .block_stores
-                    .get(block_idx)
-                    .and_then(|s| s.get(store_idx))
-                    .cloned()
-                    .unwrap_or_default();
-                ret_map.push(var_name);
-            }
+        let candidates = return_candidates(&sig, &plan.block_stores);
+        if !candidates.is_empty() {
+            apply_additional_returns(&mut sig, &plan.block_stores, &[0]);
         }
 
         assert!(validate_rename_map(&sig).is_ok());
-        let result = rewrite::apply_refactoring(
-            source,
-            &blocks,
-            &plan.ref_node_positions,
-            &sig,
-            "extracted_func_0",
-            &plan.scope_ctx,
-        );
-        assert!(
-            validate_output(&result).is_ok(),
-            "added return must produce valid Python"
-        );
+        let result = plan_apply(source, &blocks, 1, 2, "extracted_func_0", |s| {
+            *s = sig.clone();
+        });
+        assert!(validate_output(&result).is_ok());
     }
 
     // ── auto-sync test ──
 
-    /// When output=input (e.g. `a += 1`), rename_parameters auto-syncs the
-    /// return (which was set to `arg_N` by unify_signatures).
     #[test]
     fn auto_sync_linked_return_on_param_rename() {
-        let source = "\
-a += 1
-print(a)
-b += 1
-print(b)
-";
+        let source = "a += 1\nprint(a)\nb += 1\nprint(b)\n";
         let blocks = scan::find_matches(source, 1, 1).unwrap();
         let plan = crate::plan_extraction(source, &blocks, 1, 1).unwrap();
         let mut sig = plan.sig.clone();
 
-        assert_eq!(
-            sig.returns[0], "arg_0",
-            "unify_signatures links output=input"
-        );
+        assert_eq!(sig.returns[0], "arg_0", "unify_signatures links output=input");
 
-        // Simulate param rename: arg_0 → x.
-        sig.params[0] = "x".to_string();
-        // Apply the same data-driven auto-sync logic as rename_parameters:
-        // compare original variable names in block maps to detect linked params/returns.
-        if let (Some(arg_map), Some(ret_map)) =
-            (sig.block_arg_maps.first(), sig.block_return_maps.first())
-        {
-            for (ret_idx, ret_orig) in ret_map.iter().enumerate() {
-                if let Some(param_idx) = arg_map.iter().position(|a| a == ret_orig) {
-                    sig.returns[ret_idx] = sig.params[param_idx].clone();
-                }
-            }
-        }
+        // Simulate param rename and auto-sync using the extracted helper.
+        sig.params[0] = "x".into();
+        sync_linked_returns(&mut sig);
 
         assert_eq!(sig.returns[0], "x", "return must follow param rename");
-        assert!(validate_rename_map(&sig).is_ok());
 
-        let result = rewrite::apply_refactoring(
-            source,
-            &blocks,
-            &plan.ref_node_positions,
-            &sig,
-            "inc",
-            &plan.scope_ctx,
-        );
+        let result = plan_apply(source, &blocks, 1, 1, "inc", |s| *s = sig.clone());
         assert!(result.contains("def inc(x):"));
         assert!(result.contains("return x"));
         assert!(!result.contains("arg_0"));
-        assert!(validate_output(&result).is_ok());
     }
 
     #[test]

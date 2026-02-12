@@ -7,7 +7,7 @@ You are operating autonomously. To maintain progress across long sessions, you m
 ## 🗺️ Self-Orientation & State Management
 You have time-blindness and context-amnesia. To prevent getting lost or stuck in infinite loops, you must maintain your own state.  You are a AI agent without human invervention using `run_claude.sh`, so you need to determine what to do next by yourself without human permission.
 
-* **Maintain `PROGRESS.md`:** At the start of every session, read latest "current_tasks/`PROGRESS_{datetime}.md" using ls -l`. Before finishing a task or ending a response, UPDATE `PROGRESS_{datetime}.md with:
+* **Maintain `PROGRESS.md`:** At the start of every session, read latest "`PROGRESS.md"`. Before finishing a task or ending a response, UPDATE `PROGRESS_{datetime}.md with:
     * Current goal (from the `design_doc.md`).
     * What was just completed.
     * Failed approaches (Crucial: log what *didn't* work so you don't repeat mistakes).
@@ -15,9 +15,9 @@ You have time-blindness and context-amnesia. To prevent getting lost or stuck in
 * **Consult the Design Doc:** Always refer to `design_doc.md` for architectural decisions. Do not deviate from the defined scope (e.g., do not use LLM APIs for naming; use static analysis only).
 
 * **Stochastic Refactoring Protocol**
-  * **Randomized Tech-Debt Reduction (10% Rule):** At the beginning of a new task or session, you must execute the following Linux command in the shell to determine your operational mode:
-    ```bash
-    bash -c 'if [ $((RANDOM % 10)) -eq 0 ]; then echo "REFACTOR_MODE"; else echo "FEATURE_MODE"; fi'
+  * **Randomized Tech-Debt Reduction (20% Rule):** At the beginning of a new task or session, you must execute the following Linux command in the shell to determine your operational mode:
+    ```bash                         
+    bash -c 'if [ $((RANDOM % 5)) -eq 0 ]; then echo "REFACTOR_MODE"; else echo "FEATURE_MODE"; fi'
     ```
   * If the standard output is `REFACTOR_MODE` (approx. 10% probability), immediately suspend any planned feature implementation and switch your current session to a **Refactoring-only Session**.
   * **Refactoring Mode Constraints:** * During this mode, adding *any* new features is strictly prohibited. 
