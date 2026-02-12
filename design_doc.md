@@ -184,9 +184,19 @@ Rustの堅牢なエコシステム、特にPython解析のデファクトスタ�
   3. `rewrite.rs`: `generate_import()`, `apply_refactoring_multi()` 追加。
      ターゲットファイルに関数定義配置、他ファイルに `from <stem> import <func>` 挿入。
   4. `main.rs`: CLI を `pym A.py B.py C.py START END [--write] [--diff]` 形式に拡張。
-     1ファイルは既存動作と完全互換。対話モード+マルチファイルはエラー。
+     1ファイルは既存動作と完全互換。
 * **テスト:** 5つのマルチファイルフィクスチャ追加（multi_simple, multi_with_returns,
   multi_inside_function, multi_three_files, multi_no_match_in_extra）。全33フィクスチャ通過。
 * **Exit Criteria:**
   * 複数ファイルに同一構造のブロックがある場合、共通関数に抽出され、各ファイルから正しくimportされること。✅
   * 単一ファイルモードの動作が変わらないこと。✅
+
+#### Iter 6: 対話モード + マルチファイル統合 ✅
+* **方針:** `--interactive` と複数ファイル指定を組み合わせ可能にする。
+* **実装結果:**
+  1. `interactive.rs`: `run_interactive_multi()` 追加。`select_sourced_blocks()` でファイル名付きブロック選択。
+  2. `main.rs`: マルチファイル+対話モードの `bail!` を除去、`run_interactive_multi` にルーティング。
+  3. プレビュー・書き込みはファイルごとに表示/確認。
+* **Exit Criteria:**
+  * `pym a.py b.py 1 2 -i` で対話的にブロック選択・リネーム・プレビューができること。✅
+  * 非対話モードの動作が変わらないこと。✅

@@ -96,15 +96,25 @@ fn main() -> Result<()> {
         }
     } else {
         // Multi-file mode.
-        if cli.interactive {
-            bail!("Interactive mode is not supported with multiple files");
-        }
-
         let sources: Vec<String> = files
             .iter()
             .map(std::fs::read_to_string)
             .collect::<Result<Vec<_>, _>>()?;
         let source_refs: Vec<&str> = sources.iter().map(|s| s.as_str()).collect();
+        let file_refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
+        let target_stem = file_stem(&files[0]);
+
+        if cli.interactive {
+            return pym::interactive::run_interactive_multi(
+                &source_refs,
+                &file_refs,
+                start_line,
+                end_line,
+                cli.write || cli.diff,
+                cli.diff,
+                &target_stem,
+            );
+        }
 
         // Stage 1: Scan target file for hash + matches.
         let (target_hash, window_size, target_matches) =
@@ -138,7 +148,6 @@ fn main() -> Result<()> {
         let plan = pym::plan_extraction_multi(&source_refs, &all_blocks, start_line, end_line)?;
 
         // Stage 3: Apply refactoring.
-        let target_stem = file_stem(&files[0]);
         let results = pym::rewrite::apply_refactoring_multi(
             &source_refs,
             &all_blocks,
