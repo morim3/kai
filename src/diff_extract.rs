@@ -174,8 +174,9 @@ fn diff_stmts(a: &Stmt, b: &Stmt, sa: &str, sb: &str, out: &mut Vec<Divergence>)
                 diff_stmt_bodies(&ca.body, &cb.body, sa, sb, out)?;
             }
         }
-        (Stmt::TypeAlias(_), Stmt::TypeAlias(_)) => {
-            bail!("divergence extraction not implemented for type alias statements");
+        (Stmt::TypeAlias(a), Stmt::TypeAlias(b)) => {
+            diff_exprs(&a.name, &b.name, sa, sb, out)?;
+            diff_exprs(&a.value, &b.value, sa, sb, out)?;
         }
         (Stmt::IpyEscapeCommand(_), Stmt::IpyEscapeCommand(_)) => {
             bail!("divergence extraction not implemented for IPython escape commands");

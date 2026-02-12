@@ -19,6 +19,7 @@
 * ~~複数ファイルにまたがるコードの検索および置換~~ → Iter 5 で実装済み。
 * `eval()`, `exec()`, `locals()`, `globals()` などを含む動的で解析困難なコードブロックの抽出。
 * 型推論やクラス継承関係を考慮した意味的マッチング。
+* IPython/Jupyter 専用構文（`IpyEscapeCommand`）を含むコードブロックの抽出。
 
 ## 3. Architecture & Core Crates (アーキテクチャと利用クレート)
 Rustの堅牢なエコシステム、特にPython解析のデファクトスタンダードとなりつつあるRuffの基盤を活用する。
@@ -211,7 +212,8 @@ Rustの堅牢なエコシステム、特にPython解析のデファクトスタ�
   5. **FunctionDef**: name, decorator_list, parameters (`diff_parameters` 再利用), returns, body を diff。
   6. **ClassDef**: name, decorator_list, base classes (arguments), body を diff。
   7. **バグ修正**: `Expr::Call` で keyword 引数の value が diff されていなかった問題を修正。
-  8. TypeAlias, IpyEscapeCommand は引き続き not-implemented（レア構文）。
+  8. **TypeAlias**: name, value を diff。
+  9. IpyEscapeCommand は非サポート（IPython/Jupyter 専用構文のため対象外）。
 * **テスト:** ユニットテスト 17 件追加、統合フィクスチャ 4 件追加（comprehension, fstring, lambda, match）。全38フィクスチャ通過。
 * **Exit Criteria:**
   * 内包表記、f-string、lambda、match、FunctionDef、ClassDef を含むブロックで正しくパラメータ化されること。✅
