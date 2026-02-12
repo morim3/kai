@@ -1,4 +1,4 @@
-# pym: 4-5
+# kai: 4-5
 def setup():
     class Config:
         x = 1

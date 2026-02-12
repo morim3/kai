@@ -1,4 +1,4 @@
-# pym: 4-5
+# kai: 4-5
 def setup():
     def extracted_func_0(arg_0, arg_1):
         x = arg_0

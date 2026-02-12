@@ -3,7 +3,7 @@ def extracted_func_0(arg_0, arg_1):
     ret_0 = a + arg_1
     return ret_0
 
-# pym: 2-3
+# kai: 2-3
 b = extracted_func_0(1, 2)
 print(b)
 d = extracted_func_0(10, 20)

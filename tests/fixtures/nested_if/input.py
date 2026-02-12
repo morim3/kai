@@ -1,4 +1,4 @@
-# pym: 1-5
+# kai: 1-5
 if x > 0:
     if x > 10:
         result = x * 2

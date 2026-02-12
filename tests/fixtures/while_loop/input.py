@@ -1,4 +1,4 @@
-# pym: 2-4
+# kai: 2-4
 n = 10
 while n > 0:
     n = n - 1

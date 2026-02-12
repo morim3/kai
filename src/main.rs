@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "pym", about = "Python Extract Method refactoring tool")]
+#[command(name = "kai", about = "Python Extract Method refactoring tool")]
 struct Cli {
     /// Python files and line range: FILE [FILE...] START END
     #[arg(required = true)]
@@ -29,7 +29,7 @@ struct Cli {
 /// Everything before them is a file path.
 fn parse_positional(args: &[String]) -> Result<(Vec<String>, usize, usize)> {
     if args.len() < 3 {
-        bail!("Usage: pym FILE [FILE...] START END");
+        bail!("Usage: kai FILE [FILE...] START END");
     }
 
     let end: usize = args[args.len() - 1]
@@ -69,19 +69,19 @@ fn main() -> Result<()> {
             } else {
                 None
             };
-            return pym::interactive::run_interactive(
+            return kai::interactive::run_interactive(
                 &source, start_line, end_line, file_path, cli.diff,
             );
         }
 
-        let options = pym::ExtractOptions::default();
-        let result = pym::extract_method_with_options(&source, start_line, end_line, &options)?;
+        let options = kai::ExtractOptions::default();
+        let result = kai::extract_method_with_options(&source, start_line, end_line, &options)?;
 
         if cli.write {
             std::fs::write(&files[0], &result)?;
             eprintln!("Wrote refactored code to {}", files[0]);
         } else if cli.diff {
-            let diff = pym::rewrite::unified_diff(&source, &result, &files[0]);
+            let diff = kai::rewrite::unified_diff(&source, &result, &files[0]);
             print!("{diff}");
         } else {
             print!("{result}");
@@ -96,7 +96,7 @@ fn main() -> Result<()> {
         let target_stem = file_stem(&files[0]);
 
         if interactive {
-            return pym::interactive::run_interactive_multi(
+            return kai::interactive::run_interactive_multi(
                 &source_refs,
                 &file_refs,
                 start_line,
@@ -110,19 +110,19 @@ fn main() -> Result<()> {
         let func_name = "extracted_func_0";
 
         let (target_hash, window_size, target_matches) =
-            pym::scan::find_matches_with_hash(source_refs[0], start_line, end_line)?;
+            kai::scan::find_matches_with_hash(source_refs[0], start_line, end_line)?;
 
-        let mut all_blocks: Vec<pym::SourcedBlock> = target_matches
+        let mut all_blocks: Vec<kai::SourcedBlock> = target_matches
             .into_iter()
-            .map(|b| pym::SourcedBlock {
+            .map(|b| kai::SourcedBlock {
                 block: b,
                 source_index: 0,
             })
             .collect();
 
         for (i, src) in source_refs.iter().enumerate().skip(1) {
-            let extra_matches = pym::scan::find_matches_in_file(src, target_hash, window_size);
-            all_blocks.extend(extra_matches.into_iter().map(|b| pym::SourcedBlock {
+            let extra_matches = kai::scan::find_matches_in_file(src, target_hash, window_size);
+            all_blocks.extend(extra_matches.into_iter().map(|b| kai::SourcedBlock {
                 block: b,
                 source_index: i,
             }));
@@ -135,9 +135,9 @@ fn main() -> Result<()> {
             );
         }
 
-        let plan = pym::plan_extraction_multi(&source_refs, &all_blocks, start_line, end_line)?;
+        let plan = kai::plan_extraction_multi(&source_refs, &all_blocks, start_line, end_line)?;
 
-        let results = pym::rewrite::apply_refactoring_multi(
+        let results = kai::rewrite::apply_refactoring_multi(
             &source_refs,
             &all_blocks,
             &plan.ref_node_positions,
@@ -155,7 +155,7 @@ fn main() -> Result<()> {
         } else if cli.diff {
             for (i, result) in results.iter().enumerate() {
                 if result != sources[i].as_str() {
-                    let diff = pym::rewrite::unified_diff(&sources[i], result, &files[i]);
+                    let diff = kai::rewrite::unified_diff(&sources[i], result, &files[i]);
                     print!("{diff}");
                 }
             }

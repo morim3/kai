@@ -1,4 +1,4 @@
-# pym: 3-4
+# kai: 3-4
 async def fetch_data():
     a = 1
     b = a + 2

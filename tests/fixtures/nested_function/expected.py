@@ -1,4 +1,4 @@
-# pym: 4-5
+# kai: 4-5
 def outer():
     def inner():
         def extracted_func_0(arg_0, arg_1):

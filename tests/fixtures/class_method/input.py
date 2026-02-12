@@ -1,4 +1,4 @@
-# pym: 3-4
+# kai: 3-4
 class Config:
     x = 1
     y = x + 2

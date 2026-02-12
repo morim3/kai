@@ -1,8 +1,8 @@
 use predicates::prelude::*;
 use std::fs;
 
-fn pym() -> assert_cmd::Command {
-    assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("pym"))
+fn kai() -> assert_cmd::Command {
+    assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("kai"))
 }
 
 fn fixture_path(name: &str, file: &str) -> String {
@@ -15,7 +15,7 @@ fn fixture_path(name: &str, file: &str) -> String {
 /// Default (no --no-interactive) tries interactive mode, which fails without a tty.
 #[test]
 fn default_is_interactive() {
-    pym()
+    kai()
         .args(["tests/fixtures/simple_assignment/input.py", "2", "3"])
         .assert()
         .failure()
@@ -26,7 +26,7 @@ fn default_is_interactive() {
 #[test]
 fn no_interactive_outputs_refactored_source() {
     let expected = fs::read_to_string(fixture_path("simple_assignment", "expected.py")).unwrap();
-    pym()
+    kai()
         .args([
             "tests/fixtures/simple_assignment/input.py",
             "2",
@@ -41,7 +41,7 @@ fn no_interactive_outputs_refactored_source() {
 /// `--diff` outputs unified diff.
 #[test]
 fn diff_flag_outputs_unified_diff() {
-    pym()
+    kai()
         .args([
             "tests/fixtures/simple_assignment/input.py",
             "2",
@@ -58,10 +58,10 @@ fn diff_flag_outputs_unified_diff() {
 /// `--write` writes the file and prints a message to stderr.
 #[test]
 fn write_flag_modifies_file() {
-    let tmp = std::env::temp_dir().join("pym_write_test.py");
+    let tmp = std::env::temp_dir().join("kai_write_test.py");
     fs::copy(fixture_path("simple_assignment", "input.py"), &tmp).unwrap();
 
-    pym()
+    kai()
         .args([
             tmp.to_str().unwrap(),
             "2",
@@ -83,7 +83,7 @@ fn write_flag_modifies_file() {
 /// Error case: nonexistent file.
 #[test]
 fn nonexistent_file_fails() {
-    pym()
+    kai()
         .args(["nonexistent.py", "1", "2", "--no-interactive"])
         .assert()
         .failure();

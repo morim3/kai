@@ -1,4 +1,4 @@
-# pym: 4-5
+# kai: 4-5
 class Calculator:
     def compute(self):
         a = 1

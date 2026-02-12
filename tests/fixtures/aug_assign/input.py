@@ -1,4 +1,4 @@
-# pym: 3-4
+# kai: 3-4
 total = 0
 count = 5
 total += count

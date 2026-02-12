@@ -1,4 +1,4 @@
-# pym: 4-5
+# kai: 4-5
 def outer():
     def inner():
         a = 1

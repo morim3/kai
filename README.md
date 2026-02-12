@@ -1,4 +1,4 @@
-# pym
+# kai
 
 Python Extract Method refactoring tool. Finds structurally identical code blocks and extracts them into a shared function.
 
@@ -14,7 +14,7 @@ y = x + 200
 ```
 
 ```sh
-pym example.py 1 2
+kai example.py 1 2
 ```
 
 ```python
@@ -32,27 +32,27 @@ Lines 1-2 and 4-5 are structurally identical. The differing literals become para
 ## Usage
 
 ```
-pym FILE [FILE...] START END [OPTIONS]
+kai FILE [FILE...] START END [OPTIONS]
 ```
 
 ```sh
-pym example.py 1 2                    # interactive mode (default)
-pym example.py 1 2 --diff             # unified diff output
-pym example.py 1 2 --write            # write back to file
-pym a.py b.py c.py 1 2               # multi-file refactoring
-pym example.py 1 2 --no-interactive   # non-interactive (for scripts/CI)
+kai example.py 1 2                    # interactive mode (default)
+kai example.py 1 2 --diff             # unified diff output
+kai example.py 1 2 --write            # write back to file
+kai a.py b.py c.py 1 2               # multi-file refactoring
+kai example.py 1 2 --no-interactive   # non-interactive (for scripts/CI)
 ```
 
 ## Installation
 
 ```sh
-curl -LsSf https://github.com/morim3/pym/releases/latest/download/pym-installer.sh | sh
+curl -LsSf https://github.com/morim3/kai/releases/latest/download/kai-installer.sh | sh
 ```
 
 Or build from source (requires Rust 1.91+):
 
 ```sh
-cargo install --git https://github.com/morim3/pym
+cargo install --git https://github.com/morim3/kai
 ```
 
 ## License

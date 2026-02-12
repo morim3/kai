@@ -1,4 +1,4 @@
-# pym: 2-3
+# kai: 2-3
 width = 5
 area = width * 10
 print(area)

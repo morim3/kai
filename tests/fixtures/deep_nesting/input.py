@@ -1,4 +1,4 @@
-# pym: 5-6
+# kai: 5-6
 def outer():
     class Processor:
         def run(self):

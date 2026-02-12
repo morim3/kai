@@ -1,12 +1,12 @@
 use std::fs;
 use std::path::Path;
 
-/// Parse the `# pym: START-END` marker from the first line of a fixture input file.
+/// Parse the `# kai: START-END` marker from the first line of a fixture input file.
 fn parse_marker(content: &str) -> (usize, usize) {
     let first_line = content.lines().next().expect("empty fixture file");
     let marker = first_line
-        .strip_prefix("# pym: ")
-        .unwrap_or_else(|| panic!("missing '# pym: START-END' marker in: {first_line}"));
+        .strip_prefix("# kai: ")
+        .unwrap_or_else(|| panic!("missing '# kai: START-END' marker in: {first_line}"));
     let (start, end) = marker
         .split_once('-')
         .unwrap_or_else(|| panic!("invalid marker format: {marker}"));
@@ -20,14 +20,14 @@ fn parse_marker(content: &str) -> (usize, usize) {
 ///
 /// Supports simple key-value format:
 ///   func_name = "compute"
-fn parse_options(dir: &Path) -> pym::ExtractOptions {
+fn parse_options(dir: &Path) -> kai::ExtractOptions {
     let path = dir.join("options.toml");
     let content = match fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => return pym::ExtractOptions::default(),
+        Err(_) => return kai::ExtractOptions::default(),
     };
 
-    let mut opts = pym::ExtractOptions::default();
+    let mut opts = kai::ExtractOptions::default();
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -80,7 +80,7 @@ fn run_fixture(dir: &Path) -> Result<(), String> {
 
     let (start, end) = parse_marker(&input);
     let options = parse_options(dir);
-    let result = match pym::extract_method_with_options(&input, start, end, &options) {
+    let result = match kai::extract_method_with_options(&input, start, end, &options) {
         Ok(r) => r,
         Err(e) => return Err(format!("pipeline failed: {e}")),
     };
@@ -125,21 +125,21 @@ fn run_multi_fixture(dir: &Path) -> Result<(), String> {
 
     // Stage 1: Scan target file.
     let (target_hash, window_size, target_matches) =
-        pym::scan::find_matches_with_hash(&input, start, end)
+        kai::scan::find_matches_with_hash(&input, start, end)
             .map_err(|e| format!("scan failed: {e}"))?;
 
     // Build sourced blocks.
-    let mut all_blocks: Vec<pym::SourcedBlock> = target_matches
+    let mut all_blocks: Vec<kai::SourcedBlock> = target_matches
         .into_iter()
-        .map(|b| pym::SourcedBlock {
+        .map(|b| kai::SourcedBlock {
             block: b,
             source_index: 0,
         })
         .collect();
 
     for (i, src) in extra_sources.iter().enumerate() {
-        let extra_matches = pym::scan::find_matches_in_file(src, target_hash, window_size);
-        all_blocks.extend(extra_matches.into_iter().map(|b| pym::SourcedBlock {
+        let extra_matches = kai::scan::find_matches_in_file(src, target_hash, window_size);
+        all_blocks.extend(extra_matches.into_iter().map(|b| kai::SourcedBlock {
             block: b,
             source_index: i + 1,
         }));
@@ -153,11 +153,11 @@ fn run_multi_fixture(dir: &Path) -> Result<(), String> {
     }
 
     // Stage 2: Plan.
-    let plan = pym::plan_extraction_multi(&sources, &all_blocks, start, end)
+    let plan = kai::plan_extraction_multi(&sources, &all_blocks, start, end)
         .map_err(|e| format!("plan failed: {e}"))?;
 
     // Stage 3: Apply.
-    let results = pym::rewrite::apply_refactoring_multi(
+    let results = kai::rewrite::apply_refactoring_multi(
         &sources,
         &all_blocks,
         &plan.ref_node_positions,
@@ -216,7 +216,7 @@ fn run_error_fixture(dir: &Path) {
         .unwrap_or_else(|e| panic!("failed to read {}/expected_error.txt: {e}", dir.display()));
 
     let (start, end) = parse_marker(&input);
-    let err = pym::extract_method(&input, start, end)
+    let err = kai::extract_method(&input, start, end)
         .expect_err(&format!("expected error for {}, but got Ok", dir.display()));
 
     assert!(
