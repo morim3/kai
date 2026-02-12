@@ -16,7 +16,7 @@
 
 ### Out-of-Scope (実装しないもの)
 * LLMや外部APIを用いた命名生成（関数名や引数名は `extracted_func`, `arg_0`, `arg_1` のようなプレースホルダーとする）。
-* 複数ファイルにまたがるコードの検索および置換（単一ファイル内に限定）。
+* ~~複数ファイルにまたがるコードの検索および置換~~ → Iter 5 で実装済み。
 * `eval()`, `exec()`, `locals()`, `globals()` などを含む動的で解析困難なコードブロックの抽出。
 * 型推論やクラス継承関係を考慮した意味的マッチング。
 
@@ -143,7 +143,7 @@ Rustの堅牢なエコシステム、特にPython解析のデファクトスタ�
   識別子を誤置換するバグあり。`Visitor` で `Expr::Name` / `Expr::*Literal` の `TextRange` を収集し
   ピンポイント置換する `replace_names_ast` に置換。
 
-#### Iter 4: 対話モード ✅ (簡素化版) / 🔧 (バリデーション・戻り値追加は未実装)
+#### Iter 4: 対話モード ✅
 * **方針:** デフォルトは現在と同じ自動モード。`--interactive` (`-i`) で対話モードに切り替え。
 * **アーキテクチャ:** パイプラインを3段階に分割し、AST ボロー問題を解消。
   * `scan::find_matches()` → `Vec<MatchedBlock>` (Stage 1)
@@ -151,27 +151,28 @@ Rustの堅牢なエコシステム、特にPython解析のデファクトスタ�
   * `rewrite::apply_refactoring()` → `String` (Stage 3)
   * `ExtractionPlan` = `{ sig, scope_ctx, ref_node_positions: Vec<(usize, usize)> }`
   * `collect_node_positions()` で AST ノード位置を事前収集 → ステージ間で owned data として引き回し
-* **対話フロー（確定）:**
+* **対話フロー:**
   1. ブロック選択（MultiSelect: どのマッチを置き換えるか）
   2. 関数名入力（Input + バリデーション）
   3. パラメータリネーム（Input × 各パラメータ + バリデーション）
   4. 戻り値リネーム（Input × 各戻り値 + バリデーション）
-  5. 戻り値追加（ブロック内 store 変数から選択 ← 未実装）
+  5. 戻り値追加（ブロック内 store 変数から選択）
   6. プレビュー＋書き込み確認（Confirm）
 * **設計判断（パラメータ/戻り値の「除外」は不要）:**
   * パラメータ除外: block 0 の値がハードコードされるだけで有用なユースケースがない。
   * 戻り値除外: 後続コードの変数が未定義になるだけ。
   * 代わりに「戻り値の追加」が有用: after_block 解析で検出されなかった変数を
     手動で返り値に追加する（遠くで使われる変数、リファクタ後に使いたい変数）。
-* **入力バリデーション（未実装）:**
-  * 有効な Python 識別子チェック（空文字、数字始まり、ハイフン、キーワード等を拒否）
-  * パラメータ名の重複チェック
-  * 生成結果を `ruff_python_parser::parse_module` で検証 → SyntaxError 防止
+* **入力バリデーション:**
+  * 有効な Python 識別子チェック（`is_valid_python_ident` / `validate_ident`）✅
+  * パラメータ名の重複チェック（`rename_collection` 内）✅
+  * 生成結果を `ruff_python_parser::parse_module` で検証（`validate_output`）✅
+  * rename map の整合性検証（`validate_rename_map`: 衝突・マージ・重複チェック）✅
 * **Exit Criteria:**
   * `--interactive` なしでは現在と同じ出力であること。✅
   * 対話モードでブロック選択・関数名・パラメータ名・戻り値名をカスタマイズできること。✅
-  * どんなユーザー入力でも SyntaxError が出力されないこと。（未達成）
-  * 戻り値を手動追加できること。（未実装）
+  * どんなユーザー入力でも SyntaxError が出力されないこと。✅
+  * 戻り値を手動追加できること。✅
 
 #### Iter 5: 複数ファイル対応 ✅
 * **方針:** 複数ファイルにまたがる構造的に同一のブロックを検出し、共通関数として抽出する。
