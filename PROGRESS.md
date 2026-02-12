@@ -1,8 +1,8 @@
 # PROGRESS.md
 
 ## Current State
-- Phase 1-5 + Iter 1-11 完了
-- 115 tests, Latest commit: `4753c38`
+- Phase 1-5 + Iter 1-12 完了
+- 117 tests, Latest commit: `aab5c21`
 
 ## Completed
 - Phase 1-5: 基本機能すべて実装済み
@@ -44,6 +44,16 @@
   - `lib.rs`: `plan_extraction_multi()` 冒頭で block 0 の安全性検証
   - break/continue (loop_depth), return/yield/yield_from (function_depth) の深さ追跡
   - 統合フィクスチャ: `error_return_not_extractable`, `error_yield_not_extractable`
+- Iter 12: セマンティックバグ修正（手動トレース監査で発見）✅
+  - **match_divergence修正**: MatchValue/MatchMapping keyパターン内のdivergenceを拒否
+    - `case 1:` → `case arg_0:` でvalue patternがcapture patternに変わる問題
+    - `diff_patterns` で divergence検出時にbail（エラーフィクスチャに変換）
+    - `match_safe_divergence` フィクスチャ追加（subject/body divergenceは安全）
+  - **class scope出力修正**: クラスbody内のstore全てをoutputとして扱う
+    - `analyze_block` に `all_stores_as_outputs` フラグ追加
+    - `unify_signatures` → `plan_extraction_multi` 経由で `ScopeKind::Class` 判定
+    - 関数が `return ret_0, ret_1` を返し、呼び出し側で `x, y = extracted_func_0(...)` に変更
+    - 3つのクラスフィクスチャ更新: `class_method`, `class_with_after_code`, `class_in_function`
 
 ## Refactoring History
 - **スコープ探索統一:** `find_scopes_inner` に統合（-69行）
@@ -61,7 +71,7 @@
   - `NodePosition { offset, len }` 構造体で `(usize, usize)` タプル8箇所を置換
 
 ## Design Decisions
-- output は全スコープ統一で after_block 依存（Class 特別扱いなし）
+- output は基本的に after_block 依存。ただし Class スコープでは全 store を output（クラス属性保持のため）
 - self.x 代入は return 不要（属性副作用はミュータブル参照経由）
 - クロススコープ抽出は親スコープに配置
 - 識別子置換は AST ノード位置ベース
@@ -75,7 +85,7 @@
 ## Failed Approaches
 - モジュールスコープ名の自動除外: revert済み
 - クラスbodyに self 付きメソッドとして配置: class body に self が存在しないため不可
-- Class スコープで全 store を output: 他スコープと不整合。統一ルールに変更
+- Class スコープで全 store を output: 過去に不整合として revert → Iter 12 で再導入（クラス属性消失バグのため必要）
 - テキストベース識別子置換: 文字列・コメント内を誤置換。AST ベースに置換
 - 対話モードのパラメータ/戻り値「除外」: ユースケースが薄い
 
