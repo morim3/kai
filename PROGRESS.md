@@ -1,96 +1,8 @@
 # PROGRESS.md
 
 ## Current State
-- Phase 1-5 + Iter 1-9 完了
-- 110 tests, Latest commit: `5704ca7`
-
-## Iter 9 完了: バグ修正 + コード品質改善 ✅
-- BUG-2: `block_preview` UTF-8 パニック修正 (`char_indices`)
-- BUG-1/5: 調査済み → バグではない（debug_assert + コメント追加）
-- DUP-1: `scan_all_sources()` 抽出で3箇所重複解消
-- ROB-1: 重複マッチの重なり防止（`i += window_size` skip）
-- DEAD-1 + DUP-4: `thiserror` 削除、`hash_stmt_iter` 統一
-- DUP-2/3: `interactive.rs` リファクタリング（`sync_linked_returns`, `interactive_naming`, `plan_apply` テストヘルパー）
-
-## Current Tasks: Iter 10 — 非Exprフィールドのハッシュ・スコープ漏れ修正
-
-根本原因: `walk_expr`/`walk_stmt` は `Expr`/`Stmt` ノードしか走査しない。
-`Identifier`, `bool` 等の非 Expr フィールドがハッシュ・スコープ分析から漏れている。
-該当バリアントのみ destructuring で明示処理する（残りは `walk_expr` 委譲のまま）。
-
-### Task 1: normalize.rs — 非 Expr フィールドをハッシュに追加
-対象バリアント (destructuring):
-- `Expr::Attribute` — `.attr: Identifier` をハッシュ (B1)
-- `Expr::Call` — keyword `.arg: Option<Identifier>` をハッシュ (B2)
-- `Stmt::For` — `is_async: bool` をハッシュ
-- `Stmt::With` — `is_async: bool` をハッシュ
-- `Stmt::Try` — `is_star: bool` をハッシュ
-- `Comprehension` (ListComp/SetComp/DictComp/Generator 内) — `is_async: bool` をハッシュ
-
-### Task 2: scope.rs — Lambda パラメータのスコープ修正
-- `visit_expr` で `Expr::Lambda` を特別処理 (B3)
-- パラメータ名を Store として記録してから body を走査
-- → lambda 内変数が外部入力として誤検出されなくなる
-
-### Task 3: テスト
-
-#### テスト戦略
-パラメータ化テストで各修正を検証。ユニットテストのみ（統合フィクスチャは不要: ハッシュ差異とスコープ判定の単体検証で十分）。
-
-#### normalize.rs テスト (hash が異なることを assert)
-| ペア A | ペア B | 検証対象 |
-|--------|--------|---------|
-| `obj.read()` | `obj.write()` | B1: `.attr` |
-| `func(a=1)` | `func(b=1)` | B2: keyword `.arg` |
-| `for x in y: pass` | `async for x in y: pass` | `For.is_async` |
-| `with ctx(): pass` | `async with ctx(): pass` | `With.is_async` |
-| `try: pass\nexcept E: pass` | `try: pass\nexcept* E: pass` | `Try.is_star` |
-| `[x for x in y]` | `[x async for x in y]` | `Comprehension.is_async` |
-
-#### scope.rs テスト
-| ケース | 期待 | 検証対象 |
-|--------|------|---------|
-| `lambda x: x + y` | inputs = `[y]` のみ（`x` は含まない） | B3: Lambda パラメータ除外 |
-| `lambda x, y=z: x + y` | inputs = `[z]` のみ | B3: default 値は input |
-
-### 終了条件
-- [ ] 上記テーブルの全ペアでハッシュが異なること
-- [ ] 構造的に等価なペア（変数名/リテラルのみ異なる）はハッシュが一致すること（既存テストで担保）
-- [ ] Lambda パラメータが input に含まれないこと
-- [ ] 既存 110 テスト全通過
-- [ ] `cargo clippy` 警告ゼロ
-
----
-
-## Next: Iter 11 — 抽出可能性の検証 (SafetyChecker)
-
-詳細は design_doc.md Iter 11 参照。
-
-### テスト戦略
-ユニットテスト（`safety.rs` 内パラメータ化）+ 統合フィクスチャ 2 件。
-
-#### ユニットテスト (check_extractable)
-| ケース | 期待 | 理由 |
-|--------|------|------|
-| `break` 直接 | NG | loop_depth == 0 |
-| `continue` 直接 | NG | loop_depth == 0 |
-| `for x in y: break` | OK | loop_depth > 0 |
-| `return x` 直接 | NG | function_depth == 0 |
-| `def f(): return x` | OK | function_depth > 0 |
-| `lambda: x` 内の `yield` | OK | function_depth > 0 |
-| `yield x` 直接 | NG | function_depth == 0 |
-| `yield from gen()` 直接 | NG | function_depth == 0 |
-| `x = 1; y = x + 2` | OK | フロー文なし |
-
-#### 統合フィクスチャ
-- `error_break_not_extractable/` — `break` を含む → `expected_error.txt`
-- `error_yield_not_extractable/` — `yield` を含む → `expected_error.txt`
-
-### 終了条件
-- [ ] 危険なフロー文を含むブロックがエラーで拒否されること
-- [ ] ネストしたループ/関数/lambda 内のフロー文は安全と判定されること
-- [ ] 安全なブロックの既存動作が変わらないこと（全既存テスト通過）
-- [ ] `cargo clippy` 警告ゼロ
+- Phase 1-5 + Iter 1-11 完了
+- 115 tests, Latest commit: `4753c38`
 
 ## Completed
 - Phase 1-5: 基本機能すべて実装済み
@@ -123,6 +35,15 @@
 - Iter 9: バグ修正 + コード品質改善 ✅
   - UTF-8 パニック修正、重複マッチ防止、DRY 改善 (-142行)
   - `interactive.rs` リファクタリング: 共有ヘルパー抽出、テスト重複排除
+- Iter 10: 非Exprフィールドのハッシュ・スコープ漏れ修正 ✅
+  - normalize.rs: `.attr`, keyword `.arg`, `is_async`, `is_star` をハッシュに追加
+  - scope.rs: Lambda パラメータのスコープ修正（ネスト VarCollector）
+  - フィクスチャ更新: `self_attr`（同一属性名に変更）, `lambda_divergence`（パラメータ数修正）
+- Iter 11: 抽出可能性の検証 (SafetyChecker) ✅
+  - `src/safety.rs` 新規: `SafetyChecker` + `check_extractable()` + `format_unsafe_error()`
+  - `lib.rs`: `plan_extraction_multi()` 冒頭で block 0 の安全性検証
+  - break/continue (loop_depth), return/yield/yield_from (function_depth) の深さ追跡
+  - 統合フィクスチャ: `error_return_not_extractable`, `error_yield_not_extractable`
 
 ## Refactoring History
 - **スコープ探索統一:** `find_scopes_inner` に統合（-69行）
