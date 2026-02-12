@@ -172,7 +172,7 @@ pub fn plan_extraction_multi(
     }
 
     // Get window size from the target file's innermost body.
-    let (inner_body, _) =
+    let (inner_body, target_block_scope) =
         scan::find_innermost_body(target_body, target_source, start_line, end_line);
     let window_size = {
         let target_stmts = normalize::select_stmts(target_source, inner_body, start_line, end_line);
@@ -222,7 +222,14 @@ pub fn plan_extraction_multi(
         }
     }
 
-    let sig = scope::unify_signatures(&sig_inputs, &all_divs, scope_ctx.kind == ScopeKind::Class);
+    // In class/module scope, all stored variables become outputs.
+    // Class: assignments create class attributes accessible externally.
+    // Module: assignments create module globals importable by other modules.
+    // Use the target block's own scope (not placement scope) to decide this.
+    // E.g., cross_function blocks are inside functions even though placement is module-level.
+    let all_stores_as_outputs =
+        target_block_scope.kind == ScopeKind::Class || target_block_scope.kind == ScopeKind::Module;
+    let sig = scope::unify_signatures(&sig_inputs, &all_divs, all_stores_as_outputs);
 
     let ref_stmts = sig_inputs[0].0;
     let ref_node_positions = rewrite::collect_node_positions(ref_stmts);

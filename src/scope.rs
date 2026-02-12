@@ -292,6 +292,41 @@ impl VarCollector {
     }
 }
 
+impl VarCollector {
+    /// Handle a comprehension with its own scope (Python 3 semantics).
+    /// The first generator's `iter` is evaluated in the enclosing scope.
+    /// Targets and all other expressions are in the comprehension's scope.
+    fn visit_comprehension_scoped(
+        &mut self,
+        generators: &[ruff_python_ast::Comprehension],
+        visit_output: impl FnOnce(&mut VarCollector),
+    ) {
+        // First generator's iter is evaluated in the enclosing scope.
+        if let Some(first) = generators.first() {
+            self.visit_expr(&first.iter);
+        }
+
+        let mut inner = VarCollector::new();
+        for (i, comp) in generators.iter().enumerate() {
+            if i > 0 {
+                // Subsequent generators' iter is in the comprehension scope.
+                inner.visit_expr(&comp.iter);
+            }
+            // Target is a Store in the comprehension scope.
+            inner.visit_expr(&comp.target);
+            for if_clause in &comp.ifs {
+                inner.visit_expr(if_clause);
+            }
+        }
+        visit_output(&mut inner);
+
+        // Merge free variables as loads in the enclosing scope.
+        for name in inner.inputs() {
+            self.events.push((name, VarAction::Load));
+        }
+    }
+}
+
 impl<'a> Visitor<'a> for VarCollector {
     fn visit_expr(&mut self, expr: &'a Expr) {
         match expr {
@@ -348,6 +383,29 @@ impl<'a> Visitor<'a> for VarCollector {
                 for name in inner.inputs() {
                     self.events.push((name, VarAction::Load));
                 }
+            }
+            // Comprehensions create their own scope in Python 3.
+            // Iteration variables don't leak to the enclosing scope.
+            Expr::ListComp(comp) => {
+                self.visit_comprehension_scoped(&comp.generators, |inner| {
+                    inner.visit_expr(&comp.elt);
+                });
+            }
+            Expr::SetComp(comp) => {
+                self.visit_comprehension_scoped(&comp.generators, |inner| {
+                    inner.visit_expr(&comp.elt);
+                });
+            }
+            Expr::DictComp(comp) => {
+                self.visit_comprehension_scoped(&comp.generators, |inner| {
+                    inner.visit_expr(&comp.key);
+                    inner.visit_expr(&comp.value);
+                });
+            }
+            Expr::Generator(generator) => {
+                self.visit_comprehension_scoped(&generator.generators, |inner| {
+                    inner.visit_expr(&generator.elt);
+                });
             }
             _ => {
                 walk_expr(self, expr);

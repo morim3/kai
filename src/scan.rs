@@ -228,7 +228,7 @@ pub fn find_matches_with_hash(
         bail!("No statements found in target range {target_start}..={target_end}");
     }
     let window_size = target_stmts.len();
-    let target_hash = hash_stmt_refs(&target_stmts);
+    let target_hash = hash_stmt_refs(&target_stmts, source);
 
     // Scan the widest relevant scope: parent body (if it exists) or innermost body.
     // This recursively covers the innermost body, sibling scopes, and parent-level statements.
@@ -318,7 +318,7 @@ fn scan_body_with_hash(
     let mut i = 0;
     while i <= body.len() - window_size {
         let window = &body[i..i + window_size];
-        let window_hash = hash_stmts(window);
+        let window_hash = hash_stmts(window, source);
 
         if window_hash == target_hash {
             let first = &window[0];

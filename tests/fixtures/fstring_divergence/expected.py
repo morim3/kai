@@ -1,7 +1,8 @@
 def extracted_func_0(arg_0):
-    msg_a = f"hello {arg_0}"
-    print(msg_a)
+    ret_0 = f"hello {arg_0}"
+    print(ret_0)
+    return ret_0
 
 # kai: 2-3
-extracted_func_0(name_a)
-extracted_func_0(name_b)
+msg_a = extracted_func_0(name_a)
+msg_b = extracted_func_0(name_b)

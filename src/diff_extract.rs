@@ -467,13 +467,10 @@ fn diff_patterns(
 ) -> Result<()> {
     match (a, b) {
         (Pattern::MatchValue(a), Pattern::MatchValue(b)) => {
-            let before = out.len();
+            // MatchValue divergences are prevented at the hash stage:
+            // different literal values produce different structural hashes,
+            // so blocks with different case values never match.
             diff_exprs(&a.value, &b.value, sa, sb, out)?;
-            if out.len() > before {
-                // Replacing a literal (e.g., `case 1:`) with a name (e.g., `case arg_0:`)
-                // turns a value pattern into a capture pattern, changing match semantics.
-                bail!("Cannot extract: match case value patterns differ between blocks");
-            }
         }
         (Pattern::MatchSingleton(_), Pattern::MatchSingleton(_)) => {
             // None / True / False — no sub-expressions to diff
@@ -484,13 +481,8 @@ fn diff_patterns(
             }
         }
         (Pattern::MatchMapping(a), Pattern::MatchMapping(b)) => {
-            let before = out.len();
+            // MatchMapping key divergences are prevented at the hash stage.
             diff_expr_slices(&a.keys, &b.keys, sa, sb, out)?;
-            if out.len() > before {
-                // Mapping pattern keys must be literals or dotted names.
-                // Parameterizing them would break pattern semantics.
-                bail!("Cannot extract: match mapping key patterns differ between blocks");
-            }
             for (pa, pb) in a.patterns.iter().zip(b.patterns.iter()) {
                 diff_patterns(pa, pb, sa, sb, out)?;
             }
@@ -685,20 +677,6 @@ mod tests {
                 "match cmd_b:\n    case 1:\n        y = 20"
             ),
             vec![n("cmd_a", "cmd_b"), l("10", "20"), n("x", "y")]
-        );
-    }
-
-    #[test]
-    fn match_value_divergence_rejected() {
-        // Divergent MatchValue patterns cannot be safely parameterized.
-        let src_a = "match cmd_a:\n    case 1:\n        x = 10";
-        let src_b = "match cmd_b:\n    case 2:\n        y = 20";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let err = extract_divergences(&a, &b, src_a, src_b).unwrap_err();
-        assert!(
-            err.to_string().contains("match case value patterns differ"),
-            "unexpected error: {err}"
         );
     }
 

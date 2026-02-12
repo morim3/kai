@@ -1,16 +1,18 @@
 use std::hash::{Hash, Hasher};
 
 use anyhow::{Result, bail};
-use ruff_python_ast::visitor::{Visitor, walk_comprehension, walk_expr, walk_keyword, walk_stmt};
+use ruff_python_ast::visitor::{
+    Visitor, walk_comprehension, walk_expr, walk_keyword, walk_pattern, walk_stmt,
+};
 use ruff_python_ast::{
-    BoolOp, CmpOp, Comprehension, Expr, ExprContext, Keyword, Operator, Stmt, UnaryOp,
+    BoolOp, CmpOp, Comprehension, Expr, ExprContext, Keyword, Operator, Pattern, Stmt, UnaryOp,
 };
 use ruff_text_size::Ranged;
 use rustc_hash::FxHasher;
 
 /// Compute the structural hash of statements via an iterator of references.
-fn hash_stmt_iter<'a>(stmts: impl Iterator<Item = &'a Stmt>) -> u64 {
-    let mut visitor = NormalizeVisitor::new();
+fn hash_stmt_iter<'a>(stmts: impl Iterator<Item = &'a Stmt>, source: &str) -> u64 {
+    let mut visitor = NormalizeVisitor::new(source);
     for stmt in stmts {
         visitor.visit_stmt(stmt);
     }
@@ -18,13 +20,13 @@ fn hash_stmt_iter<'a>(stmts: impl Iterator<Item = &'a Stmt>) -> u64 {
 }
 
 /// Compute the structural hash of a slice of AST statements.
-pub fn hash_stmts(stmts: &[Stmt]) -> u64 {
-    hash_stmt_iter(stmts.iter())
+pub fn hash_stmts(stmts: &[Stmt], source: &str) -> u64 {
+    hash_stmt_iter(stmts.iter(), source)
 }
 
 /// Compute the structural hash of a collection of statement references.
-pub fn hash_stmt_refs(stmts: &[&Stmt]) -> u64 {
-    hash_stmt_iter(stmts.iter().copied())
+pub fn hash_stmt_refs(stmts: &[&Stmt], source: &str) -> u64 {
+    hash_stmt_iter(stmts.iter().copied(), source)
 }
 
 /// Extract the statements covering `start_line..=end_line` (1-based) from source.
@@ -41,7 +43,7 @@ pub fn hash_block(source: &str, start_line: usize, end_line: usize) -> Result<u6
         bail!("No statements found in range {start_line}..={end_line}");
     }
 
-    Ok(hash_stmt_refs(&stmts))
+    Ok(hash_stmt_refs(&stmts, source))
 }
 
 /// Select statements whose line range overlaps with the given 1-based line range.
@@ -80,12 +82,14 @@ pub fn indent_at_offset(source: &str, offset: usize) -> String {
 /// A visitor that walks the AST and produces a structural hash.
 ///
 /// - Variable names (`Expr::Name`) are replaced with positional tags (VAR_0, VAR_1, ...).
-/// - Literals are replaced with a constant token.
+/// - Literals are replaced with a constant token (except inside match value patterns).
 /// - The structure (node types, operators, nesting) is fully hashed.
-struct NormalizeVisitor {
+struct NormalizeVisitor<'s> {
     hasher: FxHasher,
     /// Maps original variable names to sequential IDs (insertion order).
     var_map: Vec<String>,
+    /// Source text for hashing literal values in match patterns.
+    source: &'s str,
 }
 
 /// Match an enum value to its variant name and hash it as a tag string.
@@ -98,11 +102,12 @@ macro_rules! hash_enum_tag {
     }};
 }
 
-impl NormalizeVisitor {
-    fn new() -> Self {
+impl<'s> NormalizeVisitor<'s> {
+    fn new(source: &'s str) -> Self {
         Self {
             hasher: FxHasher::default(),
             var_map: Vec::new(),
+            source,
         }
     }
 
@@ -130,7 +135,7 @@ impl NormalizeVisitor {
     }
 }
 
-impl<'a> Visitor<'a> for NormalizeVisitor {
+impl<'a> Visitor<'a> for NormalizeVisitor<'_> {
     fn visit_stmt(&mut self, stmt: &'a Stmt) {
         // Hash the discriminant (statement kind) then recurse.
         let tag = match stmt {
@@ -257,6 +262,38 @@ impl<'a> Visitor<'a> for NormalizeVisitor {
         walk_comprehension(self, comprehension);
     }
 
+    fn visit_pattern(&mut self, pattern: &'a Pattern) {
+        match pattern {
+            // MatchValue: hash actual literal source text instead of normalizing.
+            // `case 1:` and `case 2:` must produce different hashes because
+            // parameterizing a value pattern (e.g., `case arg_0:`) turns it into
+            // a capture pattern with completely different match semantics.
+            Pattern::MatchValue(mv) => {
+                self.hash_tag("MatchValue");
+                let r = mv.value.range();
+                self.hash_tag(&self.source[r.start().to_usize()..r.end().to_usize()]);
+            }
+            // MatchMapping keys: same issue — keys must be literals or dotted names.
+            Pattern::MatchMapping(mm) => {
+                self.hash_tag("MatchMapping");
+                for key in &mm.keys {
+                    let r = key.range();
+                    self.hash_tag(&self.source[r.start().to_usize()..r.end().to_usize()]);
+                }
+                // Walk the rest (value patterns, rest name) normally.
+                for pat in &mm.patterns {
+                    self.visit_pattern(pat);
+                }
+                if let Some(ref rest) = mm.rest {
+                    self.hash_tag(rest.as_str());
+                }
+            }
+            _ => {
+                walk_pattern(self, pattern);
+            }
+        }
+    }
+
     fn visit_expr_context(&mut self, ctx: &'a ExprContext) {
         hash_enum_tag!(self, ctx,
             ExprContext::Load => "Load",
@@ -344,6 +381,11 @@ mod tests {
                 "for x in data:\n    print(x)",
                 "for loop",
             ),
+            (
+                "match cmd_a:\n    case 1:\n        x = 10",
+                "match cmd_b:\n    case 1:\n        y = 20",
+                "match with same case value",
+            ),
         ];
         for (a, b, label) in cases {
             assert_eq!(
@@ -412,6 +454,11 @@ mod tests {
                 "[x for x in y]",
                 "[x async for x in y]",
                 "Comprehension is_async",
+            ),
+            (
+                "match x:\n    case 1:\n        pass",
+                "match x:\n    case 2:\n        pass",
+                "MatchValue literal",
             ),
         ];
         for (a, b, label) in cases {

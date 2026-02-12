@@ -52,7 +52,7 @@ fn diff_flag_outputs_unified_diff() {
         .assert()
         .success()
         .stdout(predicate::str::contains("-a = 1"))
-        .stdout(predicate::str::contains("+extracted_func_0(1, 2)"));
+        .stdout(predicate::str::contains("+a, b = extracted_func_0(1, 2)"));
 }
 
 /// `--write` writes the file and prints a message to stderr.

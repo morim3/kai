@@ -1,7 +1,8 @@
 def extracted_func_0(arg_0, arg_1):
-    a = arg_0
-    b = a + arg_1
+    ret_0 = arg_0
+    ret_1 = ret_0 + arg_1
+    return ret_0, ret_1
 
 # kai: 2-3
-extracted_func_0(1, 2)
-extracted_func_0(10, 20)
+a, b = extracted_func_0(1, 2)
+c, d = extracted_func_0(10, 20)

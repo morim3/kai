@@ -1,8 +1,9 @@
 def extracted_func_0(arg_0):
-    n = arg_0
-    while n > 0:
-        n = n - 1
+    ret_0 = arg_0
+    while ret_0 > 0:
+        ret_0 = ret_0 - 1
+    return ret_0
 
 # kai: 2-4
-extracted_func_0(10)
-extracted_func_0(20)
+n = extracted_func_0(10)
+n = extracted_func_0(20)
