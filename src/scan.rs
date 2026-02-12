@@ -30,9 +30,13 @@ pub struct ScopeContext {
 
 /// Result of a scope traversal: the innermost body/context and optionally the parent.
 pub struct ScopeInfo<'a> {
+    /// The actual innermost body containing the target (may be a control flow body).
     pub inner_body: &'a [Stmt],
+    /// The body of the nearest Python scope (Function/Class/Module).
+    /// Used for scope-level checks; always a scope body, never a control flow body.
+    pub scope_body: &'a [Stmt],
     pub inner_ctx: ScopeContext,
-    /// The body one level above the innermost (None if innermost == top level).
+    /// The body one level above the innermost scope (None if innermost == top level).
     pub parent: Option<(&'a [Stmt], ScopeContext)>,
 }
 
@@ -52,9 +56,11 @@ pub fn find_scopes<'a>(
         ScopeKind::Module,
         None,
         None,
+        top_body,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn find_scopes_inner<'a>(
     body: &'a [Stmt],
     source: &str,
@@ -63,6 +69,7 @@ fn find_scopes_inner<'a>(
     current_kind: ScopeKind,
     class_def_offset: Option<usize>,
     parent_indent: Option<String>,
+    scope_body: &'a [Stmt],
 ) -> ScopeInfo<'a> {
     for stmt in body {
         let range = stmt.range();
@@ -70,13 +77,15 @@ fn find_scopes_inner<'a>(
         let stmt_end = line_of_offset(source, range.end().to_usize().saturating_sub(1));
 
         if stmt_start <= target_start && stmt_end >= target_end {
+            // Check for scope-creating children (FunctionDef, ClassDef).
             let child = match stmt {
                 Stmt::FunctionDef(f) => Some((f.body.as_slice(), ScopeKind::Function, None, None)),
                 Stmt::ClassDef(c) => Some((
                     c.body.as_slice(),
                     ScopeKind::Class,
                     Some(range.start().to_usize()),
-                    body.first()
+                    scope_body
+                        .first()
                         .map(|s| indent_at_offset(source, s.range().start().to_usize())),
                 )),
                 _ => None,
@@ -91,30 +100,98 @@ fn find_scopes_inner<'a>(
                     child_kind,
                     child_class_offset,
                     child_parent_indent,
+                    child_body,
                 );
-                // If no parent was found deeper, the current body is the parent.
+                // If no parent was found deeper, the current scope is the parent.
                 if info.parent.is_none() {
                     let ctx = make_scope_context(
-                        body,
+                        scope_body,
                         source,
                         current_kind,
                         class_def_offset,
                         parent_indent,
                     );
-                    info.parent = Some((body, ctx));
+                    info.parent = Some((scope_body, ctx));
                 }
                 return info;
+            }
+
+            // Check for control flow children. These don't create Python scopes,
+            // so we recurse with the same scope parameters.
+            for sub_body in control_flow_bodies(stmt) {
+                if body_contains_lines(sub_body, source, target_start, target_end) {
+                    return find_scopes_inner(
+                        sub_body,
+                        source,
+                        target_start,
+                        target_end,
+                        current_kind,
+                        class_def_offset,
+                        parent_indent.clone(),
+                        scope_body,
+                    );
+                }
             }
         }
     }
 
     // Base case: target is directly in this body.
-    let ctx = make_scope_context(body, source, current_kind, class_def_offset, parent_indent);
+    let ctx = make_scope_context(
+        scope_body,
+        source,
+        current_kind,
+        class_def_offset,
+        parent_indent,
+    );
     ScopeInfo {
         inner_body: body,
+        scope_body,
         inner_ctx: ctx,
         parent: None,
     }
+}
+
+/// Collect sub-bodies from control flow statements (not scope-creating statements).
+fn control_flow_bodies(stmt: &Stmt) -> Vec<&[Stmt]> {
+    match stmt {
+        Stmt::If(s) => {
+            let mut bodies: Vec<&[Stmt]> = vec![&s.body];
+            for clause in &s.elif_else_clauses {
+                bodies.push(&clause.body);
+            }
+            bodies
+        }
+        Stmt::For(s) => vec![&s.body, &s.orelse],
+        Stmt::While(s) => vec![&s.body, &s.orelse],
+        Stmt::With(s) => vec![&s.body],
+        Stmt::Try(s) => {
+            let mut bodies: Vec<&[Stmt]> = vec![&s.body];
+            for handler in &s.handlers {
+                let ruff_python_ast::ExceptHandler::ExceptHandler(h) = handler;
+                bodies.push(&h.body);
+            }
+            bodies.push(&s.orelse);
+            bodies.push(&s.finalbody);
+            bodies
+        }
+        Stmt::Match(s) => s.cases.iter().map(|c| c.body.as_slice()).collect(),
+        _ => vec![],
+    }
+}
+
+/// Check if a body's line range contains the target lines.
+fn body_contains_lines(
+    body: &[Stmt],
+    source: &str,
+    target_start: usize,
+    target_end: usize,
+) -> bool {
+    let (Some(first), Some(last)) = (body.first(), body.last()) else {
+        return false;
+    };
+    let body_start = line_of_offset(source, first.range().start().to_usize());
+    let body_end = line_of_offset(source, last.range().end().to_usize().saturating_sub(1));
+    body_start <= target_start && body_end >= target_end
 }
 
 /// Convenience wrapper: returns only the innermost body and its scope context.
@@ -166,7 +243,7 @@ pub fn find_body_for_block<'a>(
 
 /// Determine the appropriate scope context based on where all matched blocks reside.
 ///
-/// If all matches are within the same body, returns the innermost scope context.
+/// If all matches are within the same scope, returns the innermost scope context.
 /// If matches span sibling scopes, returns the parent scope context.
 pub fn find_scope_for_matches(
     top_body: &[Stmt],
@@ -177,13 +254,21 @@ pub fn find_scope_for_matches(
 ) -> ScopeContext {
     let info = find_scopes(top_body, source, target_start, target_end);
 
-    let all_in_same_body = matches.iter().all(|m| {
-        info.inner_body
-            .iter()
-            .any(|s| s.range().start().to_usize() == m.start_offset)
-    });
+    // Check if all matches fall within the byte range of the target's scope body.
+    // This correctly handles matches in different control flow branches within the
+    // same scope (e.g., if/else bodies inside the same function).
+    let all_in_same_scope =
+        if let (Some(first), Some(last)) = (info.scope_body.first(), info.scope_body.last()) {
+            let scope_start = first.range().start().to_usize();
+            let scope_end = last.range().end().to_usize();
+            matches
+                .iter()
+                .all(|m| m.start_offset >= scope_start && m.start_offset < scope_end)
+        } else {
+            true
+        };
 
-    if all_in_same_body {
+    if all_in_same_scope {
         return info.inner_ctx;
     }
 
@@ -230,11 +315,11 @@ pub fn find_matches_with_hash(
     let window_size = target_stmts.len();
     let target_hash = hash_stmt_refs(&target_stmts, source);
 
-    // Scan the widest relevant scope: parent body (if it exists) or innermost body.
+    // Scan the widest relevant scope: parent body (if it exists) or scope body.
     // This recursively covers the innermost body, sibling scopes, and parent-level statements.
     let search_root = match &scope_info.parent {
         Some((parent_body, _)) => parent_body,
-        None => scope_info.inner_body,
+        None => scope_info.scope_body,
     };
     let mut matches = Vec::new();
     scan_all_bodies_recursive(source, search_root, target_hash, window_size, &mut matches);
@@ -277,7 +362,8 @@ pub fn find_matches_in_file(
     matches
 }
 
-/// Recursively scan all bodies (module, function, class) in the AST for matching blocks.
+/// Recursively scan all bodies (module, function, class, control flow) in the AST
+/// for matching blocks.
 fn scan_all_bodies_recursive(
     source: &str,
     body: &[Stmt],
@@ -288,14 +374,42 @@ fn scan_all_bodies_recursive(
     // Scan this body.
     matches.extend(scan_body_with_hash(source, body, target_hash, window_size));
 
-    // Recurse into child scopes.
+    // Recurse into child scopes and control flow bodies.
     for stmt in body {
+        let recurse = |b: &[Stmt], m: &mut Vec<MatchedBlock>| {
+            scan_all_bodies_recursive(source, b, target_hash, window_size, m);
+        };
         match stmt {
-            Stmt::FunctionDef(f) => {
-                scan_all_bodies_recursive(source, &f.body, target_hash, window_size, matches);
+            Stmt::FunctionDef(f) => recurse(&f.body, matches),
+            Stmt::ClassDef(c) => recurse(&c.body, matches),
+            Stmt::If(if_stmt) => {
+                recurse(&if_stmt.body, matches);
+                for clause in &if_stmt.elif_else_clauses {
+                    recurse(&clause.body, matches);
+                }
             }
-            Stmt::ClassDef(c) => {
-                scan_all_bodies_recursive(source, &c.body, target_hash, window_size, matches);
+            Stmt::For(for_stmt) => {
+                recurse(&for_stmt.body, matches);
+                recurse(&for_stmt.orelse, matches);
+            }
+            Stmt::While(while_stmt) => {
+                recurse(&while_stmt.body, matches);
+                recurse(&while_stmt.orelse, matches);
+            }
+            Stmt::With(with_stmt) => recurse(&with_stmt.body, matches),
+            Stmt::Try(try_stmt) => {
+                recurse(&try_stmt.body, matches);
+                for handler in &try_stmt.handlers {
+                    let ruff_python_ast::ExceptHandler::ExceptHandler(h) = handler;
+                    recurse(&h.body, matches);
+                }
+                recurse(&try_stmt.orelse, matches);
+                recurse(&try_stmt.finalbody, matches);
+            }
+            Stmt::Match(match_stmt) => {
+                for case in &match_stmt.cases {
+                    recurse(&case.body, matches);
+                }
             }
             _ => {}
         }

@@ -56,171 +56,120 @@ Rustの堅牢なエコシステム、特にPython解析のデファクトスタ�
 
 ## 5. Implementation Phases & Exit Criteria (実装フェーズと終了条件)
 
-### Phase 1: AST正規化とターゲットブロックのハッシュ化
-* **タスク:** CLI引数（`file.py`, `start_line`, `end_line`）を受け取り、対象範囲のコードを `ruff_python_parser` でパース。`Visitor` を用いて正規化ハッシュを計算する。
+### 完了済み: Phase 1-5 (基盤実装) ✅
+
+| Phase | タスク | 概要 |
+|-------|--------|------|
+| 1 | AST正規化+ハッシュ化 | 変数名・リテラルを消した構造的ハッシュで等価性判定 |
+| 2 | 類似ブロックスキャン | スライディングウィンドウで同一ハッシュのブロックを全探索 |
+| 3 | 変数スコープ解析 | データフロー解析で引数(inputs)と戻り値(outputs)を特定 |
+| 4 | コード書き換え+差分出力 | 関数定義生成 + ブロック→呼び出し置換 + unified diff |
+| 5 | CLI改善 | `--diff`, `--write`, `--name` オプション |
+
+### 完了済み: Iter 1-7 (反復改善) ✅
+
+| Iter | タスク | 主な設計判断 |
+|------|--------|------------|
+| 1 | ビルトイン除外 | `ruff_python_stdlib::is_python_builtin()` で静的除外。import名は除外しない（再代入可能） |
+| 2 | 抽出先スコープ変更 | 最小共通スコープに配置。Class body → クラス外（self 不使用）。Output は全スコープ統一 after_block 依存 |
+| 3+3.5 | スコープテスト+横断スキャン | 兄弟スコープ（別関数 body）も横断スキャン。`find_scopes` で innermost+parent を1回探索 |
+| DRY | リファクタリング | AST ベース識別子置換（`replace_names_ast`）。indent計算共通化。スコープ探索統合 |
+| 4 | 対話モード | 3段階パイプライン分割（scan → plan → apply）。パラメータ除外不要、戻り値追加が有用 |
+| 5 | 複数ファイル対応 | `SourcedBlock`, `plan_extraction_multi()`。クロスファイル → Module 配置強制 |
+| 6 | 対話+マルチファイル統合 | `run_interactive_multi()`。ファイル名付きブロック選択 |
+| 7 | 未対応構文の divergence | 内包表記, FString/TString, Lambda, Match, FunctionDef, ClassDef, TypeAlias |
+
+### 完了済みの主要な設計判断
+
+- **Output 判定**: Module/Class スコープでは ALL stores を output（グローバル変数/クラス属性は外部参照可能）。Function スコープでは after_block で使われる store のみ。
+- **`self.x = ...` は return 不要**: 属性への副作用。ミュータブル参照経由で反映。
+- **パラメータ除外ステップ不要**: block 0 の値がハードコードされるだけで有用性なし。
+- **戻り値追加は有用**: after_block 解析で未検出の変数を対話モードで手動追加可能。
+- **クロスファイル時は Module 配置強制**: 関数定義はターゲットファイルに、他ファイルは `from X import func`。
+
+---
+
+### Iter 8: 制御フロー内ブロックスキャン
+
+* **背景:** 現在の `scan_all_bodies_recursive` は `FunctionDef` と `ClassDef` の body のみに再帰する。
+  `if`/`for`/`while`/`with`/`try`/`match` の内部にあるブロックは探索対象外。
+
+  ```python
+  def process(items):
+      for item in items:
+          # このブロックは現在見つからない
+          x = item.value
+          result = x * 2
+          print(result)
+  ```
+
+* **方針:** 制御フロー文の body にも再帰的にスキャンを拡張する。
+  制御フロー文は Python のスコープを作らないため、スコープ判定（`ScopeKind`）は変更不要。
+
+* **実装:**
+
+  1. **`scan_all_bodies_recursive`** (`scan.rs`): 以下の match arm を追加
+
+     | Stmt | 再帰対象の body |
+     |------|----------------|
+     | `If` | `.body`, `.elif_else_clauses[*].body` |
+     | `For` | `.body`, `.orelse` |
+     | `While` | `.body`, `.orelse` |
+     | `With` | `.body` |
+     | `Try` | `.body`, `.handlers[*].body`, `.orelse`, `.finalbody` |
+     | `Match` | `.cases[*].body` |
+
+  2. **`find_scopes_inner`** (`scan.rs`): 同じ再帰パターンを追加。
+     制御フロー内部に入っても `ScopeKind` は変わらない（Python のスコープではない）。
+     再帰で `child` を返す際は `current_kind` をそのまま引き継ぐ。
+
+  3. **`find_body_for_block`** (`scan.rs`): `find_innermost_body` → `find_scopes` 経由で
+     制御フロー内のブロックが所属する body を正しく返す必要がある。
+
+  4. **After-block 計算の課題:**
+     制御フロー内のブロックの after_block は「同一 body 内の後続文」のみ。
+     親スコープの後続文は含まれないため、output 検出が conservative になる場合がある。
+
+     ```python
+     def process():
+         if True:
+             x = 1        # block
+             y = x + 2    # block
+         print(y)         # 親スコープ → after_block に含まれない
+     ```
+
+     対策案:
+     - **A. Conservative (初期実装):** 同一 body 内の後続文のみ。output が不足する場合は対話モードで手動追加。
+     - **B. Walk-up (将来):** 制御フロー body の後続文 + 親スコープ body の後続文を連結。
+
+* **テスト (フィクスチャ — 制御フロー全種類):**
+
+  | フィクスチャ | カバー対象 |
+  |-------------|-----------|
+  | `if_body_scan` | If body + elif/else body |
+  | `for_body_scan` | For body |
+  | `while_body_scan` | While body |
+  | `with_body_scan` | With body |
+  | `try_body_scan` | Try handler body |
+  | `match_body_scan` | Match case body |
+  | `nested_control_flow` | 制御フロー内制御フロー |
+
+* **修正対象ファイル:**
+
+  | ファイル | 変更内容 |
+  |---------|---------|
+  | `src/scan.rs` | `scan_all_bodies_recursive`, `find_scopes_inner`, `find_body_for_block` に制御フロー再帰追加 |
+  | `tests/fixtures/` | 新規フィクスチャ 7 件 |
+
 * **Exit Criteria:**
-  * コマンド実行時にパースエラーでクラッシュしない。
-  * 変数名やリテラルだけが異なる等価な2つのコード片を入力した際、生成される「正規化ハッシュ値」が完全に一致するテストがパスすること。
+  * 全制御フロー文（if, for, while, with, try, match）内のブロックが検出・抽出されること。
+  * ネストした制御フロー内のブロックも検出されること。
+  * スコープ判定が正しいこと（制御フローで ScopeKind が変わらない）。
+  * 既存テスト全通過。
 
-### Phase 2: 同一ファイル内の類似ブロックスキャン
-* **タスク:** Phase 1のハッシュ計算ロジックをファイル全体の各ステートメント群に適用（スライディングウィンドウ等）し、ターゲットとハッシュが一致するブロックをすべて見つけ出す。
-* **Exit Criteria:**
-  * 対象ファイル内にターゲットと構造が同じブロックが複数存在する場合、それらすべての「開始行・終了行（またはバイトオフセット）」が標準出力にリストアップされること。
+---
 
-### Phase 3: 変数スコープ解析（引数・戻り値の特定）
-* **タスク:** マッチした各コードブロックのASTを解析し、外部から渡すべき変数（引数）と、外部へ返す変数（戻り値）を特定する。また、各ブロック間の変数の対応関係を解決する。
-* **Exit Criteria:**
-  * 抽出ブロックを入力として、必要な `inputs` (引数リスト) と `outputs` (戻り値リスト) を正確に返す構造体・関数が実装され、テストがパスすること。
-  * 異なる変数が使われているブロック同士を比較し、共通関数のシグネチャが破綻なく生成できること。
-
-### Phase 4: コードの書き換えと差分出力 (Rewriting)
-* **タスク:** 新しい共通関数（`def extracted_func_0(arg_0, arg_1):`）のAST/文字列を生成し、マッチした元の各ブロックを関数呼び出しに置き換える。
-* **Exit Criteria:**
-  * 置換後のコードが有効なPythonコードとしてパース可能（SyntaxErrorにならない）であること。
-  * `similar` クレートを用いて、リファクタリング前後のUnified Diffが標準出力されること。
-  * `--write` オプションを付与した場合、元のコードのインデントを維持したままファイルが正しく上書き保存されること。
-
-### Phase 5: CLIの使いやすさ向上 (Usability Improvements) ✅
-* **タスク:** コマンドラインツールとしての実用性を高める。
-  1. **デフォルト出力の変更:** `--write` なしの場合、リファクタリング後のソースコードを標準出力に出力。`--diff` で Unified Diff。
-  2. **命名カスタマイズ機能:** `--name` で関数名を指定可能。
-* **Exit Criteria:**
-  * デフォルトで標準出力にリファクタリング後のコード全文が出力されること。
-  * `--name my_func` のように指定した場合、`def my_func(arg_0, arg_1):` として関数が生成されること。
-
-### Phase 6: スコープとパラメータ制御の改善
-
-#### Iter 1: ビルトイン除外 ✅
-* **タスク:** `ruff_python_stdlib` を依存に追加し、ハードコードのビルトインリストを `ruff_python_stdlib::builtins::is_python_builtin()` に置換する。
-* **Exit Criteria:**
-  * `print`, `range`, `len` 等のビルトインがパラメータにならないこと。
-  * Python 3.10+ のビルトイン (`aiter`, `anext`) も正しく除外されること。
-* **設計判断:** import名やモジュールスコープ変数の自動除外は行わない。
-  理由: 関数名・import名もPythonでは再代入可能であり、「何を除外すべきか」の判断は
-  自動化すると条件分岐が増える。将来のCLI制御（パラメータ手動選択）に委ねる方がシンプル。
-
-#### Iter 2: 抽出先スコープの変更（最深配置） ✅
-* **方針:** 抽出した関数を、マッチブロック群の**最小共通スコープ**に配置する。
-* **実装結果:**
-  1. 同一関数内のブロック → その関数内にネスト関数として配置。
-  2. 同一クラスbody内のブロック → クラスの**外**に通常関数として配置（`self` 不使用）。
-  3. トップレベルのブロック → モジュールレベルに配置（既存動作維持）。
-* **設計判断:**
-  * クラスbody直下では `self` が存在しないため、クラス外の通常関数として配置。
-  * output の判定は全スコープ統一で after_block 依存（Class 特別扱いなし）。
-  * `self.x = ...` は属性への副作用であり return 不要（ミュータブル参照経由で反映）。
-
-#### Iter 3: エッジケーステスト（スコープ極限テスト） ✅
-* **テスト対象と結果:**
-  1. クラスメソッド内（Class → Function） ✅
-  2. ネスト関数（Function → Function） ✅
-  3. 関数内クラス（Function → Class） ✅
-  4. 深いネスト（Function → Class → Method） ✅
-  5. async 関数 ✅
-  6. クラスbody + 後続コード ✅
-  7. self.x 属性代入 ✅
-  8. 空行で分離されたブロック ✅
-  9. 別関数に同パターン → エラー（同一スコープ内のみ検索）
-* **発見した課題:** 兄弟スコープ（別関数の body）を横断スキャンしていない。
-  → Iter 3.5 で修正。
-
-#### Iter 3.5: 兄弟スコープ横断スキャン ✅
-* **方針:** 同一親スコープ内の兄弟 body（他の関数/クラスの body）も横断的にスキャンし、
-  スコープをまたぐ重複ブロックを検出する。
-* **実装結果:**
-  1. `scan.rs`: `find_scopes` で innermost と parent を1回の探索で取得（統合済み）。
-  2. `scan.rs`: `find_body_for_block` で各マッチブロックの所属 body を特定。
-  3. `scan.rs`: `find_scope_for_matches` でクロススコープ時は親スコープコンテキストを使用。
-  4. `lib.rs`: per-block after_block 算出（各ブロックの所属 body から取得）。
-* **Exit Criteria:**
-  * `def foo(): a=1; b=a+2` と `def bar(): x=10; y=x+20` が同一関数に抽出されること。✅
-  * 同一スコープ内のマッチが引き続き正しく動作すること。✅
-
-#### リファクタリング: DRY & バグ修正 ✅
-* **スコープ探索統一:** `find_innermost_body_inner` + `find_parent_with_ctx_inner`
-  → 単一の `find_scopes_inner` に統合。1回の探索で innermost/parent 両方を返す（-69行）。
-* **indent計算統一:** scan.rs / rewrite.rs の重複 → `normalize::indent_at_offset` に共通化。
-* **AST ベース識別子置換:** `replace_identifier`（テキストベース）は文字列リテラル・コメント内の
-  識別子を誤置換するバグあり。`Visitor` で `Expr::Name` / `Expr::*Literal` の `TextRange` を収集し
-  ピンポイント置換する `replace_names_ast` に置換。
-
-#### Iter 4: 対話モード ✅
-* **方針:** デフォルトは現在と同じ自動モード。`--interactive` (`-i`) で対話モードに切り替え。
-* **アーキテクチャ:** パイプラインを3段階に分割し、AST ボロー問題を解消。
-  * `scan::find_matches()` → `Vec<MatchedBlock>` (Stage 1)
-  * `plan_extraction()` → `ExtractionPlan` (Stage 2: owned data, AST borrow 不要)
-  * `rewrite::apply_refactoring()` → `String` (Stage 3)
-  * `ExtractionPlan` = `{ sig, scope_ctx, ref_node_positions: Vec<NodePosition> }`
-  * `collect_node_positions()` で AST ノード位置を事前収集 → ステージ間で owned data として引き回し
-* **対話フロー:**
-  1. ブロック選択（MultiSelect: どのマッチを置き換えるか）
-  2. 関数名入力（Input + バリデーション）
-  3. パラメータリネーム（Input × 各パラメータ + バリデーション）
-  4. 戻り値リネーム（Input × 各戻り値 + バリデーション）
-  5. 戻り値追加（ブロック内 store 変数から選択）
-  6. プレビュー＋書き込み確認（Confirm）
-* **設計判断（パラメータ/戻り値の「除外」は不要）:**
-  * パラメータ除外: block 0 の値がハードコードされるだけで有用なユースケースがない。
-  * 戻り値除外: 後続コードの変数が未定義になるだけ。
-  * 代わりに「戻り値の追加」が有用: after_block 解析で検出されなかった変数を
-    手動で返り値に追加する（遠くで使われる変数、リファクタ後に使いたい変数）。
-* **入力バリデーション:**
-  * 有効な Python 識別子チェック（`is_valid_python_ident` / `validate_ident`）✅
-  * パラメータ名の重複チェック（`rename_collection` 内）✅
-  * 生成結果を `ruff_python_parser::parse_module` で検証（`validate_output`）✅
-  * rename map の整合性検証（`validate_rename_map`: 衝突・マージ・重複チェック）✅
-* **Exit Criteria:**
-  * `--interactive` なしでは現在と同じ出力であること。✅
-  * 対話モードでブロック選択・関数名・パラメータ名・戻り値名をカスタマイズできること。✅
-  * どんなユーザー入力でも SyntaxError が出力されないこと。✅
-  * 戻り値を手動追加できること。✅
-
-#### Iter 5: 複数ファイル対応 ✅
-* **方針:** 複数ファイルにまたがる構造的に同一のブロックを検出し、共通関数として抽出する。
-* **実装結果:**
-  1. `scan.rs`: `find_matches_with_hash()` でハッシュ+window_size+マッチを返す新API追加。
-     `find_matches_in_file()` で任意ソースを再帰的にスキャン（全スコープ対応）。
-  2. `lib.rs`: `SourcedBlock`（MatchedBlock + source_index）と `plan_extraction_multi()` 追加。
-     クロスファイル時は `ScopeKind::Module` に強制。既存 `plan_extraction` はラッパー化。
-  3. `rewrite.rs`: `generate_import()`, `apply_refactoring_multi()` 追加。
-     ターゲットファイルに関数定義配置、他ファイルに `from <stem> import <func>` 挿入。
-  4. `main.rs`: CLI を `pym A.py B.py C.py START END [--write] [--diff]` 形式に拡張。
-     1ファイルは既存動作と完全互換。
-* **テスト:** 5つのマルチファイルフィクスチャ追加（multi_simple, multi_with_returns,
-  multi_inside_function, multi_three_files, multi_no_match_in_extra）。全33フィクスチャ通過。
-* **Exit Criteria:**
-  * 複数ファイルに同一構造のブロックがある場合、共通関数に抽出され、各ファイルから正しくimportされること。✅
-  * 単一ファイルモードの動作が変わらないこと。✅
-
-#### Iter 6: 対話モード + マルチファイル統合 ✅
-* **方針:** `--interactive` と複数ファイル指定を組み合わせ可能にする。
-* **実装結果:**
-  1. `interactive.rs`: `run_interactive_multi()` 追加。`select_sourced_blocks()` でファイル名付きブロック選択。
-  2. `main.rs`: マルチファイル+対話モードの `bail!` を除去、`run_interactive_multi` にルーティング。
-  3. プレビュー・書き込みはファイルごとに表示/確認。
-* **Exit Criteria:**
-  * `pym a.py b.py 1 2 -i` で対話的にブロック選択・リネーム・プレビューができること。✅
-  * 非対話モードの動作が変わらないこと。✅
-
-#### Iter 7: 未対応構文の divergence extraction 対応 ✅
-* **方針:** `diff_extract.rs` で not-implemented エラーを返していた構文のうち、実用頻度の高いものを実装する。
-* **実装結果:**
-  1. **内包表記** (ListComp, SetComp, DictComp, Generator): `diff_comprehensions()` ヘルパーで `target`, `iter`, `ifs` を再帰的に diff。
-  2. **FString / TString**: `diff_interpolated_elements()` ヘルパーで `Interpolation` 内の式と `format_spec` を再帰的に diff。
-  3. **Lambda**: `diff_parameters()` ヘルパーでパラメータ名と default 値を diff。`diff_param_names()` で Identifier の Name divergence を手動処理。
-  4. **Match**: `diff_patterns()` 関数で Pattern の 8 バリアント全てを再帰的に diff。subject, guard, body も diff。
-  5. **FunctionDef**: name, decorator_list, parameters (`diff_parameters` 再利用), returns, body を diff。
-  6. **ClassDef**: name, decorator_list, base classes (arguments), body を diff。
-  7. **バグ修正**: `Expr::Call` で keyword 引数の value が diff されていなかった問題を修正。
-  8. **TypeAlias**: name, value を diff。
-  9. IpyEscapeCommand は非サポート（IPython/Jupyter 専用構文のため対象外）。
-* **テスト:** ユニットテスト 17 件追加、統合フィクスチャ 4 件追加（comprehension, fstring, lambda, match）。全38フィクスチャ通過。
-* **Exit Criteria:**
-  * 内包表記、f-string、lambda、match、FunctionDef、ClassDef を含むブロックで正しくパラメータ化されること。✅
-  * Call の keyword 引数の divergence が正しく抽出されること。✅
-  * 既存テストが全て通過すること。✅
-
-#### Iter 11: 抽出可能性の検証 (SafetyChecker)
+### Iter 9: 抽出可能性の検証 (SafetyChecker) ✅
 * **背景:** 現在のツールは、指定ブロックが関数に抽出可能かどうかを検証しない。
   ブロック内に特定のフロー制御文が含まれると、抽出後にコードが壊れる:
 

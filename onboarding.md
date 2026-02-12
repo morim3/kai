@@ -193,7 +193,7 @@ fn scan_all_bodies_recursive(source, body, target_hash, window_size, matches) {
 }
 ```
 
-**制御フロー文の内部は未実装。** 以下の match arm を追加すれば、内部の body もスキャン対象になる:
+**制御フロー文の内部は未実装（Iter 8 で対応予定）。** 以下の match arm を追加すれば、内部の body もスキャン対象になる:
 
 | Stmt | 内部の body | 状態 |
 |------|-----------|:---:|
@@ -406,11 +406,14 @@ src/
 │   ├── apply_refactoring()      :147 # 単一ファイル適用
 │   └── apply_refactoring_multi():263 # マルチファイル適用
 │
+├── safety.rs         # 抽出可能性の検証
+│   └── check_extractable()      # break/continue/return/yield の安全性チェック
+│
 └── interactive.rs    # 対話モード (dialoguer)
-    ├── run_interactive()         :    # 単一ファイル対話フロー
-    ├── run_interactive_multi()   :    # マルチファイル対話フロー
-    ├── interactive_naming()      :    # 共通命名フロー (Steps 2-5)
-    └── sync_linked_returns()     :    # パラメータ→戻り値の自動同期
+    ├── run_interactive()         # 単一ファイル対話フロー
+    ├── run_interactive_multi()   # マルチファイル対話フロー
+    ├── interactive_naming()      # 共通命名フロー (Steps 2-5)
+    └── sync_linked_returns()     # パラメータ→戻り値の自動同期
 
 tests/
 ├── integration.rs    # フィクスチャベースの統合テスト (auto-discover)
@@ -558,8 +561,8 @@ Expr::Attribute(ExprAttribute { value, attr, ctx: _, range: _ }) => {
 ## 制約と未実装機能
 
 詳細は以下のドキュメントを参照:
-- **抽出可能性の検証** (`SafetyChecker`): `design_doc.md` §6
-- **制御フロー内スキャン**: `design_doc.md` §6
+- **抽出可能性の検証** (`SafetyChecker`): `design_doc.md` Iter 9 (実装済み)
+- **制御フロー内スキャン**: `design_doc.md` Iter 8 (次のタスク)
 - **ハッシュ漏れ** (`.attr`, `is_async` 等): 本ドキュメントの「正規化されるもの / されないもの」テーブル
 - **Lambda スコープ**: 本ドキュメントの「Visitor パターンと既知の落とし穴」セクション
 - **今後のタスク**: `PROGRESS.md` の Next Steps
@@ -572,7 +575,7 @@ Expr::Attribute(ExprAttribute { value, attr, ctx: _, range: _ }) => {
 # ビルド
 cargo build
 
-# テスト実行 (110+ tests)
+# テスト実行
 cargo test
 
 # Lint

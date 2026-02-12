@@ -141,7 +141,7 @@ pub fn plan_extraction_multi(
     // Parse each source once.
     let parsed: Vec<_> = sources
         .iter()
-        .map(|s| parse_python(s).map(|p| p.into_syntax()))
+        .map(|s| parse_python(s).map(ruff_python_parser::Parsed::into_syntax))
         .collect::<Result<Vec<_>>>()?;
 
     let target_body = &parsed[0].body;
