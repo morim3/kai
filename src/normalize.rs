@@ -2,10 +2,12 @@ use std::hash::{Hash, Hasher};
 
 use anyhow::{Result, bail};
 use ruff_python_ast::visitor::{
-    Visitor, walk_comprehension, walk_expr, walk_keyword, walk_pattern, walk_stmt,
+    Visitor, walk_comprehension, walk_expr, walk_interpolated_string_element, walk_keyword,
+    walk_pattern, walk_stmt,
 };
 use ruff_python_ast::{
-    BoolOp, CmpOp, Comprehension, Expr, ExprContext, Keyword, Operator, Pattern, Stmt, UnaryOp,
+    BoolOp, CmpOp, Comprehension, Expr, ExprContext, InterpolatedStringElement, Keyword, Operator,
+    Pattern, Stmt, StringLiteral, UnaryOp,
 };
 use ruff_text_size::Ranged;
 use rustc_hash::FxHasher;
@@ -263,6 +265,28 @@ impl<'a> Visitor<'a> for NormalizeVisitor<'_> {
         walk_comprehension(self, comprehension);
     }
 
+    fn visit_interpolated_string_element(&mut self, element: &'a InterpolatedStringElement) {
+        match element {
+            InterpolatedStringElement::Literal(lit) => {
+                // F-string literal segments (e.g., "hello " in f"hello {x}") cannot be
+                // parameterized without restructuring the f-string AST, so hash the
+                // actual text to prevent matching blocks with different literal content.
+                self.hash_tag(&lit.value);
+            }
+            InterpolatedStringElement::Interpolation(_) => {
+                walk_interpolated_string_element(self, element);
+            }
+        }
+    }
+
+    fn visit_string_literal(&mut self, string_literal: &'a StringLiteral) {
+        // String literal parts in f-string concatenation (e.g., "prefix" in "prefix" f"{x}")
+        // cannot be parameterized, so hash the actual text.
+        // Note: standalone Expr::StringLiteral is handled in visit_expr (hashes "Literal"
+        // tag only), so this method is only reached for FStringPart::Literal segments.
+        self.hash_tag(&string_literal.value);
+    }
+
     fn visit_pattern(&mut self, pattern: &'a Pattern) {
         match pattern {
             // MatchValue: hash actual literal source text instead of normalizing.
@@ -387,6 +411,11 @@ mod tests {
                 "match cmd_b:\n    case 1:\n        y = 20",
                 "match with same case value",
             ),
+            (
+                "s = f\"hello {name}\"",
+                "s = f\"hello {user}\"",
+                "fstring with same literal text",
+            ),
         ];
         for (a, b, label) in cases {
             assert_eq!(
@@ -406,6 +435,11 @@ mod tests {
                 "a = 1\nb = a + 2",
                 "a = 1\nb = b + 2",
                 "different variable-reference pattern",
+            ),
+            (
+                "s = f\"Pending: {x}\"",
+                "s = f\"Shipped: {x}\"",
+                "fstring with different literal text",
             ),
         ];
         for (a, b, label) in cases {

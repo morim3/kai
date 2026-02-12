@@ -135,10 +135,11 @@ ruff の `Visitor` トレイトは **AST のツリーノード型** に対する
 | ExprContext | Load, Store, Del | Yes | `visit_expr_context` :230 | 実装済 |
 | 変数名 | `x`, `data` | **No** (正規化) | `visit_expr` :168 | 実装済 |
 | リテラル値 | `1`, `"hello"` | **No** (正規化) | `visit_expr` :177 | 実装済 |
-| 属性名 | `.read`, `.write` | Yes にすべき | — | **未実装** |
-| キーワード引数名 | `key=`, `value=` | Yes にすべき | — | **未実装** |
-| `is_async` | `async for` vs `for` | Yes にすべき | — | **未実装** |
-| `is_star` | `except*` vs `except` | Yes にすべき | — | **未実装** |
+| 属性名 | `.read`, `.write` | Yes | `visit_expr` Attribute arm | 実装済 |
+| キーワード引数名 | `key=`, `value=` | Yes | `visit_keyword` | 実装済 |
+| `is_async` | `async for` vs `for` | Yes | `visit_comprehension` / `visit_stmt` | 実装済 |
+| `is_star` | `except*` vs `except` | Yes | `visit_except_handler` | 実装済 |
+| f-string リテラル | `"hello "` in f-string | Yes | `visit_interpolated_string_element` | 実装済 |
 
 ### スライディングウィンドウ (`scan.rs`)
 
@@ -193,18 +194,18 @@ fn scan_all_bodies_recursive(source, body, target_hash, window_size, matches) {
 }
 ```
 
-**制御フロー文の内部は未実装（Iter 8 で対応予定）。** 以下の match arm を追加すれば、内部の body もスキャン対象になる:
+**制御フロー文の内部にも再帰する（Iter 8 で実装済み）。**
 
 | Stmt | 内部の body | 状態 |
 |------|-----------|:---:|
 | `FunctionDef` | `.body` | 実装済 |
 | `ClassDef` | `.body` | 実装済 |
-| `If` | `.body`, `.elif_else_clauses[*].body` | **未実装** |
-| `For` | `.body`, `.orelse` | **未実装** |
-| `While` | `.body`, `.orelse` | **未実装** |
-| `With` | `.body` | **未実装** |
-| `Try` | `.body`, `.handlers[*].body`, `.orelse`, `.finalbody` | **未実装** |
-| `Match` | `.cases[*].body` | **未実装** |
+| `If` | `.body`, `.elif_else_clauses[*].body` | 実装済 |
+| `For` | `.body`, `.orelse` | 実装済 |
+| `While` | `.body`, `.orelse` | 実装済 |
+| `With` | `.body` | 実装済 |
+| `Try` | `.body`, `.handlers[*].body`, `.orelse`, `.finalbody` | 実装済 |
+| `Match` | `.cases[*].body` | 実装済 |
 
 実装例:
 ```rust

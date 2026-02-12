@@ -351,7 +351,8 @@ fn diff_exprs(a: &Expr, b: &Expr, sa: &str, sb: &str, out: &mut Vec<Divergence>)
                         diff_interpolated_elements(&fa.elements, &fb.elements, sa, sb, out)?;
                     }
                     (FStringPart::Literal(_), FStringPart::Literal(_)) => {
-                        // Literal string parts — structural difference handled by normalizer
+                        // Literal string parts are guaranteed identical here because
+                        // the normalizer hashes their text content.
                     }
                     _ => bail!("mismatched f-string parts in structurally identical blocks"),
                 }
@@ -409,7 +410,8 @@ fn diff_interpolated_elements(
                 }
             }
             (InterpolatedStringElement::Literal(_), InterpolatedStringElement::Literal(_)) => {
-                // Literal parts — structural difference handled by normalizer
+                // Literal parts are guaranteed identical here because
+                // the normalizer hashes their text content.
             }
             _ => bail!("mismatched interpolated string elements in structurally identical blocks"),
         }
