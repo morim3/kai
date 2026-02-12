@@ -2,6 +2,7 @@ pub mod diff_extract;
 pub mod interactive;
 pub mod normalize;
 pub mod rewrite;
+pub mod safety;
 pub mod scan;
 pub mod scope;
 
@@ -196,6 +197,17 @@ pub fn plan_extraction_multi(
             &[]
         };
         sig_inputs.push((block_slice, after_slice));
+    }
+
+    // Safety check: verify block 0 can be extracted into a function.
+    if let Err(unsafe_nodes) = safety::check_extractable(sig_inputs[0].0) {
+        bail!(
+            "{}",
+            safety::format_unsafe_error(
+                sources[blocks[0].source_index],
+                &unsafe_nodes
+            )
+        );
     }
 
     // Extract divergences between block 0 and each other block.
