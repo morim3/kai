@@ -12,12 +12,27 @@ fn fixture_path(name: &str, file: &str) -> String {
     )
 }
 
-/// Default output is refactored source code.
+/// Default (no --no-interactive) tries interactive mode, which fails without a tty.
 #[test]
-fn default_output_is_refactored_source() {
-    let expected = fs::read_to_string(fixture_path("simple_assignment", "expected.py")).unwrap();
+fn default_is_interactive() {
     pym()
         .args(["tests/fixtures/simple_assignment/input.py", "2", "3"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown").not());
+}
+
+/// `--no-interactive` outputs refactored source code.
+#[test]
+fn no_interactive_outputs_refactored_source() {
+    let expected = fs::read_to_string(fixture_path("simple_assignment", "expected.py")).unwrap();
+    pym()
+        .args([
+            "tests/fixtures/simple_assignment/input.py",
+            "2",
+            "3",
+            "--no-interactive",
+        ])
         .assert()
         .success()
         .stdout(expected);
@@ -31,29 +46,13 @@ fn diff_flag_outputs_unified_diff() {
             "tests/fixtures/simple_assignment/input.py",
             "2",
             "3",
+            "--no-interactive",
             "--diff",
         ])
         .assert()
         .success()
         .stdout(predicate::str::contains("-a = 1"))
         .stdout(predicate::str::contains("+extracted_func_0(1, 2)"));
-}
-
-/// `--name` customizes the generated function name.
-#[test]
-fn custom_name() {
-    let expected = fs::read_to_string(fixture_path("custom_names", "expected.py")).unwrap();
-    pym()
-        .args([
-            "tests/fixtures/custom_names/input.py",
-            "2",
-            "3",
-            "--name",
-            "compute",
-        ])
-        .assert()
-        .success()
-        .stdout(expected);
 }
 
 /// `--write` writes the file and prints a message to stderr.
@@ -63,7 +62,13 @@ fn write_flag_modifies_file() {
     fs::copy(fixture_path("simple_assignment", "input.py"), &tmp).unwrap();
 
     pym()
-        .args([tmp.to_str().unwrap(), "2", "3", "--write"])
+        .args([
+            tmp.to_str().unwrap(),
+            "2",
+            "3",
+            "--no-interactive",
+            "--write",
+        ])
         .assert()
         .success()
         .stderr(predicate::str::contains("Wrote refactored code"));
@@ -78,31 +83,8 @@ fn write_flag_modifies_file() {
 /// Error case: nonexistent file.
 #[test]
 fn nonexistent_file_fails() {
-    pym().args(["nonexistent.py", "1", "2"]).assert().failure();
-}
-
-/// `--interactive` flag is accepted (exits with error due to non-tty stdin, but doesn't
-/// fail with "unknown argument").
-#[test]
-fn interactive_flag_accepted() {
     pym()
-        .args([
-            "tests/fixtures/simple_assignment/input.py",
-            "2",
-            "3",
-            "--interactive",
-        ])
+        .args(["nonexistent.py", "1", "2", "--no-interactive"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("unknown").not());
-}
-
-/// `-i` short flag works the same as `--interactive`.
-#[test]
-fn interactive_short_flag_accepted() {
-    pym()
-        .args(["tests/fixtures/simple_assignment/input.py", "2", "3", "-i"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("unknown").not());
+        .failure();
 }

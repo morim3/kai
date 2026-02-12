@@ -18,13 +18,9 @@ struct Cli {
     #[arg(long)]
     diff: bool,
 
-    /// Custom name for the extracted function (default: extracted_func_0)
+    /// Disable interactive mode (for scripting and testing)
     #[arg(long)]
-    name: Option<String>,
-
-    /// Interactive mode: review and customize each step
-    #[arg(long, short)]
-    interactive: bool,
+    no_interactive: bool,
 }
 
 /// Parse positional args into (file_paths, start_line, end_line).
@@ -62,14 +58,12 @@ fn file_stem(path: &str) -> String {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let (files, start_line, end_line) = parse_positional(&cli.args)?;
-
-    let func_name = cli.name.as_deref().unwrap_or("extracted_func_0");
+    let interactive = !cli.no_interactive;
 
     if files.len() == 1 {
-        // Single-file mode: fully compatible with existing behavior.
         let source = std::fs::read_to_string(&files[0])?;
 
-        if cli.interactive {
+        if interactive {
             let file_path = if cli.write || cli.diff {
                 Some(files[0].as_str())
             } else {
@@ -80,9 +74,7 @@ fn main() -> Result<()> {
             );
         }
 
-        let options = pym::ExtractOptions {
-            func_name: cli.name,
-        };
+        let options = pym::ExtractOptions::default();
         let result = pym::extract_method_with_options(&source, start_line, end_line, &options)?;
 
         if cli.write {
@@ -95,7 +87,6 @@ fn main() -> Result<()> {
             print!("{result}");
         }
     } else {
-        // Multi-file mode.
         let sources: Vec<String> = files
             .iter()
             .map(std::fs::read_to_string)
@@ -104,7 +95,7 @@ fn main() -> Result<()> {
         let file_refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
         let target_stem = file_stem(&files[0]);
 
-        if cli.interactive {
+        if interactive {
             return pym::interactive::run_interactive_multi(
                 &source_refs,
                 &file_refs,
@@ -116,11 +107,11 @@ fn main() -> Result<()> {
             );
         }
 
-        // Stage 1: Scan target file for hash + matches.
+        let func_name = "extracted_func_0";
+
         let (target_hash, window_size, target_matches) =
             pym::scan::find_matches_with_hash(source_refs[0], start_line, end_line)?;
 
-        // Scan extra files for matches.
         let mut all_blocks: Vec<pym::SourcedBlock> = target_matches
             .into_iter()
             .map(|b| pym::SourcedBlock {
@@ -144,10 +135,8 @@ fn main() -> Result<()> {
             );
         }
 
-        // Stage 2: Plan extraction.
         let plan = pym::plan_extraction_multi(&source_refs, &all_blocks, start_line, end_line)?;
 
-        // Stage 3: Apply refactoring.
         let results = pym::rewrite::apply_refactoring_multi(
             &source_refs,
             &all_blocks,

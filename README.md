@@ -36,11 +36,11 @@ pym FILE [FILE...] START END [OPTIONS]
 ```
 
 ```sh
-pym example.py 1 2 --name compute   # custom function name
-pym example.py 1 2 --diff           # unified diff output
-pym example.py 1 2 --write          # write back to file
-pym example.py 1 2 -i               # interactive mode
-pym a.py b.py c.py 1 2              # multi-file refactoring
+pym example.py 1 2                    # interactive mode (default)
+pym example.py 1 2 --diff             # unified diff output
+pym example.py 1 2 --write            # write back to file
+pym a.py b.py c.py 1 2               # multi-file refactoring
+pym example.py 1 2 --no-interactive   # non-interactive (for scripts/CI)
 ```
 
 ## Installation
