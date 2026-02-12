@@ -139,7 +139,12 @@ fn block_preview(source: &str, block: &MatchedBlock, max_len: usize) -> String {
         .collect::<Vec<_>>()
         .join(" / ");
     if preview.len() > max_len {
-        format!("{}...", &preview[..max_len])
+        let truncate_at = preview
+            .char_indices()
+            .map(|(i, _)| i)
+            .find(|&i| i >= max_len)
+            .unwrap_or(preview.len());
+        format!("{}...", &preview[..truncate_at])
     } else {
         preview
     }
@@ -515,31 +520,7 @@ pub fn run_interactive_multi(
     target_file_stem: &str,
 ) -> Result<()> {
     // Stage 1: Scan target + extra files.
-    let (target_hash, window_size, target_matches) =
-        scan::find_matches_with_hash(sources[0], start_line, end_line)?;
-
-    let mut all_blocks: Vec<SourcedBlock> = target_matches
-        .into_iter()
-        .map(|b| SourcedBlock {
-            block: b,
-            source_index: 0,
-        })
-        .collect();
-
-    for (i, src) in sources.iter().enumerate().skip(1) {
-        let extra = scan::find_matches_in_file(src, target_hash, window_size);
-        all_blocks.extend(extra.into_iter().map(|b| SourcedBlock {
-            block: b,
-            source_index: i,
-        }));
-    }
-
-    if all_blocks.len() < 2 {
-        bail!(
-            "Only {} block(s) found across all files. Need at least 2.",
-            all_blocks.len()
-        );
-    }
+    let all_blocks = crate::scan_all_sources(sources, start_line, end_line)?;
 
     // Step 1: Block selection.
     let selected_indices = select_sourced_blocks(sources, file_paths, &all_blocks)?;
@@ -1056,6 +1037,20 @@ print(b)
         };
         let preview = block_preview(source, &block, 30);
         assert!(preview.len() <= 33); // 30 + "..."
+        assert!(preview.ends_with("..."));
+    }
+
+    #[test]
+    fn block_preview_multibyte_utf8() {
+        let source = "x = \"日本語のテスト文字列\" + \"もっと長い文字列\"\n";
+        let block = MatchedBlock {
+            start_line: 1,
+            end_line: 1,
+            start_offset: 0,
+            end_offset: source.len() - 1,
+        };
+        // Should not panic on multi-byte truncation
+        let preview = block_preview(source, &block, 10);
         assert!(preview.ends_with("..."));
     }
 }

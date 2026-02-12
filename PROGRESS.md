@@ -1,9 +1,33 @@
 # PROGRESS.md
 
 ## Current State
-- Phase 1-5 + Iter 1-6 完了
-- 88 tests (lib 74 + CLI 7 + integration 1 [33 fixtures])
-- Latest commit: `c51ae4c`
+- Phase 1-5 + Iter 1-8 完了
+- 102 tests, Latest commit: `c225cba`
+
+## Current Tasks: Iter 9 — バグ修正 + コード品質改善
+
+### Task 1: BUG-2 — `block_preview` UTF-8 パニック [バグ]
+- `interactive.rs:141` の `&preview[..max_len]` がマルチバイト文字でパニック
+- `char_indices` で安全な切断点を求める
+
+### Task 2: BUG-1/5 — `apply_block_edits` + 関数挿入のオフセットずれ [バグ]
+- `rewrite.rs:106` — edits のオフセットを `source` から計算するが `result` に適用
+- `rewrite.rs:163-176` — block edit 後に `body_start_offset`/`class_def_offset` がずれる可能性
+- 現状は「ブロックが重ならない＋後ろから処理」で動くが脆い
+- `result` からオフセットを計算するか、edit pass を統合する
+
+### Task 3: DUP-1 — マルチファイル scan+SourcedBlock 構築の3箇所重複 [重複]
+- `main.rs`, `interactive.rs`, `tests/integration.rs` で同一パターン
+- `lib.rs` に `scan_all_files()` を抽出
+
+### Task 4: ROB-1 — 重複マッチの重なり検出 [堅牢性]
+- スライディングウィンドウで重なるマッチが発生しうる
+- scanner またはedit適用前に重なり検出/除去
+
+### Task 5: DEAD-1 + DUP-4 — 小さなクリーンアップ [品質]
+- `thiserror` 未使用依存を Cargo.toml から削除
+- `hash_stmts` / `hash_stmt_refs` をジェネリック関数に統一
+- INCON-1: "need >= 2 blocks" エラーメッセージを1箇所に集約
 
 ## Completed
 - Phase 1-5: 基本機能すべて実装済み
@@ -29,6 +53,10 @@
   - 内包表記, FString/TString, Lambda, Match, FunctionDef, ClassDef, TypeAlias
   - Call keyword 引数の divergence 漏れバグ修正
   - IpyEscapeCommand は対象外（IPython専用）と決定
+- Iter 8: スキャン再帰化バグ修正 + リファクタリング ✅
+  - `find_matches_with_hash` が子スコープ・親bodyを再帰探索しないバグ修正
+  - sibling loop 廃止 → `scan_all_bodies_recursive(search_root)` に統一
+  - dead code (`same_body`) 削除、-5行
 
 ## Refactoring History
 - **スコープ探索統一:** `find_scopes_inner` に統合（-69行）

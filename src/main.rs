@@ -109,31 +109,7 @@ fn main() -> Result<()> {
 
         let func_name = "extracted_func_0";
 
-        let (target_hash, window_size, target_matches) =
-            kai::scan::find_matches_with_hash(source_refs[0], start_line, end_line)?;
-
-        let mut all_blocks: Vec<kai::SourcedBlock> = target_matches
-            .into_iter()
-            .map(|b| kai::SourcedBlock {
-                block: b,
-                source_index: 0,
-            })
-            .collect();
-
-        for (i, src) in source_refs.iter().enumerate().skip(1) {
-            let extra_matches = kai::scan::find_matches_in_file(src, target_hash, window_size);
-            all_blocks.extend(extra_matches.into_iter().map(|b| kai::SourcedBlock {
-                block: b,
-                source_index: i,
-            }));
-        }
-
-        if all_blocks.len() < 2 {
-            bail!(
-                "Only {} block(s) found across all files. Need at least 2 matching blocks.",
-                all_blocks.len()
-            );
-        }
+        let all_blocks = kai::scan_all_sources(&source_refs, start_line, end_line)?;
 
         let plan = kai::plan_extraction_multi(&source_refs, &all_blocks, start_line, end_line)?;
 

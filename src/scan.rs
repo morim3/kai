@@ -315,7 +315,8 @@ fn scan_body_with_hash(
         return matches;
     }
 
-    for i in 0..=(body.len() - window_size) {
+    let mut i = 0;
+    while i <= body.len() - window_size {
         let window = &body[i..i + window_size];
         let window_hash = hash_stmts(window);
 
@@ -331,6 +332,10 @@ fn scan_body_with_hash(
                 start_offset,
                 end_offset,
             });
+            // Skip past this match to prevent overlapping matches.
+            i += window_size;
+        } else {
+            i += 1;
         }
     }
 
@@ -489,6 +494,13 @@ def bar():
 ";
         let matches = find_matches(code, 2, 3).unwrap();
         assert_eq!(matches.len(), 3, "2 in foo + 1 in bar");
+    }
+
+    #[test]
+    fn no_overlapping_matches() {
+        // 3 identical statements, window_size=2: should get (1,2) only, not (1,2)+(2,3).
+        let code = "a = 1\nb = 2\nc = 3\n";
+        assert_matches(code, 1, 2, &[(1, 2)]);
     }
 
     #[test]

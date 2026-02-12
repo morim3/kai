@@ -86,6 +86,44 @@ pub struct SourcedBlock {
     pub source_index: usize,
 }
 
+/// Stage 0: Scan target file and optional extra files for matching blocks.
+///
+/// Returns all matching blocks tagged with their source file index.
+/// `sources[0]` is the target file; remaining entries are extra files to search.
+pub fn scan_all_sources(
+    sources: &[&str],
+    start_line: usize,
+    end_line: usize,
+) -> Result<Vec<SourcedBlock>> {
+    let (target_hash, window_size, target_matches) =
+        scan::find_matches_with_hash(sources[0], start_line, end_line)?;
+
+    let mut all_blocks: Vec<SourcedBlock> = target_matches
+        .into_iter()
+        .map(|b| SourcedBlock {
+            block: b,
+            source_index: 0,
+        })
+        .collect();
+
+    for (i, src) in sources.iter().enumerate().skip(1) {
+        let extra = scan::find_matches_in_file(src, target_hash, window_size);
+        all_blocks.extend(extra.into_iter().map(|b| SourcedBlock {
+            block: b,
+            source_index: i,
+        }));
+    }
+
+    if all_blocks.len() < 2 {
+        bail!(
+            "Only {} block(s) found across all files. Need at least 2 matching blocks.",
+            all_blocks.len()
+        );
+    }
+
+    Ok(all_blocks)
+}
+
 /// Stage 1+2 (multi-file): Compute the extraction plan across multiple source files.
 ///
 /// `sources[0]` is the target file. `blocks` are tagged with their source file index.

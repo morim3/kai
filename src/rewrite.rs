@@ -103,12 +103,21 @@ pub fn generate_call(sig: &FunctionSignature, block_index: usize, func_name: &st
 ///
 /// Each edit is `(block_start_offset, block_end_offset, replacement_text)`.
 /// Edits are extended to full line boundaries (consuming leading whitespace and trailing newline).
+///
+/// Safety: offsets are computed from `source` (immutable) and applied to `result`.
+/// This is correct because edits are processed in descending offset order, so each
+/// edit only modifies bytes at or above its range — lower offsets in `result` remain
+/// identical to `source` when their turn comes.
 fn apply_block_edits(source: &str, mut edits: Vec<(usize, usize, String)>) -> String {
     edits.sort_by(|a, b| b.0.cmp(&a.0));
     let mut result = source.to_string();
     for (start, end, replacement) in &edits {
         let line_start = source[..*start].rfind('\n').map_or(0, |p| p + 1);
         let line_end = source[*end..].find('\n').map_or(*end, |p| *end + p + 1);
+        debug_assert!(
+            line_start <= line_end && line_end <= source.len(),
+            "edit range out of bounds: {line_start}..{line_end}"
+        );
         result.replace_range(line_start..line_end, replacement);
     }
     result
@@ -153,6 +162,12 @@ pub fn apply_refactoring(
     );
 
     let edits = build_call_edits(source, blocks.iter().enumerate(), sig, func_name);
+
+    // Invariant: the function insertion point is always at or before the earliest
+    // block edit. Since apply_block_edits processes edits end-to-start, bytes before
+    // the earliest edit remain unchanged — so scope offsets from `source` are still
+    // valid in `result`.
+    let earliest_edit_offset = edits.iter().map(|(s, _, _)| *s).min().unwrap_or(0);
     let mut result = apply_block_edits(source, edits);
 
     match scope.kind {
@@ -161,7 +176,12 @@ pub fn apply_refactoring(
             format!("{func_def}\n{result}")
         }
         ScopeKind::Function => {
-            // Insert at the beginning of the scope body.
+            debug_assert!(
+                scope.body_start_offset <= earliest_edit_offset,
+                "insertion point ({}) must be at or before earliest edit ({})",
+                scope.body_start_offset,
+                earliest_edit_offset
+            );
             let insert_offset = result[..scope.body_start_offset]
                 .rfind('\n')
                 .map_or(0, |p| p + 1);
@@ -169,8 +189,13 @@ pub fn apply_refactoring(
             result
         }
         ScopeKind::Class => {
-            // Insert before the class definition.
             let class_offset = scope.class_def_offset.unwrap_or(0);
+            debug_assert!(
+                class_offset <= earliest_edit_offset,
+                "class insertion point ({}) must be at or before earliest edit ({})",
+                class_offset,
+                earliest_edit_offset
+            );
             let insert_offset = result[..class_offset].rfind('\n').map_or(0, |p| p + 1);
             result.insert_str(insert_offset, &format!("{func_def}\n"));
             result

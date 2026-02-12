@@ -123,34 +123,9 @@ fn run_multi_fixture(dir: &Path) -> Result<(), String> {
     let mut sources: Vec<&str> = vec![input.as_str()];
     sources.extend(extra_sources.iter().map(|s| s.as_str()));
 
-    // Stage 1: Scan target file.
-    let (target_hash, window_size, target_matches) =
-        kai::scan::find_matches_with_hash(&input, start, end)
-            .map_err(|e| format!("scan failed: {e}"))?;
-
-    // Build sourced blocks.
-    let mut all_blocks: Vec<kai::SourcedBlock> = target_matches
-        .into_iter()
-        .map(|b| kai::SourcedBlock {
-            block: b,
-            source_index: 0,
-        })
-        .collect();
-
-    for (i, src) in extra_sources.iter().enumerate() {
-        let extra_matches = kai::scan::find_matches_in_file(src, target_hash, window_size);
-        all_blocks.extend(extra_matches.into_iter().map(|b| kai::SourcedBlock {
-            block: b,
-            source_index: i + 1,
-        }));
-    }
-
-    if all_blocks.len() < 2 {
-        return Err(format!(
-            "Only {} block(s) found across all files. Need at least 2.",
-            all_blocks.len()
-        ));
-    }
+    // Stage 1: Scan all files.
+    let all_blocks = kai::scan_all_sources(&sources, start, end)
+        .map_err(|e| format!("scan failed: {e}"))?;
 
     // Stage 2: Plan.
     let plan = kai::plan_extraction_multi(&sources, &all_blocks, start, end)

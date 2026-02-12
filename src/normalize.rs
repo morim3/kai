@@ -6,8 +6,8 @@ use ruff_python_ast::{BoolOp, CmpOp, Expr, ExprContext, Operator, Stmt, UnaryOp}
 use ruff_text_size::Ranged;
 use rustc_hash::FxHasher;
 
-/// Compute the structural hash of a slice of AST statements.
-pub fn hash_stmts(stmts: &[Stmt]) -> u64 {
+/// Compute the structural hash of statements via an iterator of references.
+fn hash_stmt_iter<'a>(stmts: impl Iterator<Item = &'a Stmt>) -> u64 {
     let mut visitor = NormalizeVisitor::new();
     for stmt in stmts {
         visitor.visit_stmt(stmt);
@@ -15,13 +15,14 @@ pub fn hash_stmts(stmts: &[Stmt]) -> u64 {
     visitor.finish()
 }
 
+/// Compute the structural hash of a slice of AST statements.
+pub fn hash_stmts(stmts: &[Stmt]) -> u64 {
+    hash_stmt_iter(stmts.iter())
+}
+
 /// Compute the structural hash of a collection of statement references.
 pub fn hash_stmt_refs(stmts: &[&Stmt]) -> u64 {
-    let mut visitor = NormalizeVisitor::new();
-    for stmt in stmts {
-        visitor.visit_stmt(stmt);
-    }
-    visitor.finish()
+    hash_stmt_iter(stmts.iter().copied())
 }
 
 /// Extract the statements covering `start_line..=end_line` (1-based) from source.
