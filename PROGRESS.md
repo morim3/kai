@@ -25,6 +25,10 @@
 - Phase 6 Iter 6: 対話モード + マルチファイル統合 ✅
   - `run_interactive_multi()` + `select_sourced_blocks()` 追加
   - マルチファイル+対話モードの `bail!` を除去
+- Iter 7: 未対応構文の divergence extraction 完全対応 ✅
+  - 内包表記, FString/TString, Lambda, Match, FunctionDef, ClassDef, TypeAlias
+  - Call keyword 引数の divergence 漏れバグ修正
+  - IpyEscapeCommand は対象外（IPython専用）と決定
 
 ## Refactoring History
 - **スコープ探索統一:** `find_scopes_inner` に統合（-69行）
@@ -51,7 +55,7 @@
 
 ## Next Steps
 - 新機能のアイデアは design_doc.md を参照
-- 残り not-implemented: TypeAlias, IpyEscapeCommand のみ（レア構文）
+- divergence extraction: IpyEscapeCommand のみ未対応（IPython専用、対象外と決定）
 
 ## Failed Approaches
 - モジュールスコープ名の自動除外: revert済み
