@@ -203,10 +203,7 @@ pub fn plan_extraction_multi(
     if let Err(unsafe_nodes) = safety::check_extractable(sig_inputs[0].0) {
         bail!(
             "{}",
-            safety::format_unsafe_error(
-                sources[blocks[0].source_index],
-                &unsafe_nodes
-            )
+            safety::format_unsafe_error(sources[blocks[0].source_index], &unsafe_nodes)
         );
     }
 
@@ -225,7 +222,7 @@ pub fn plan_extraction_multi(
         }
     }
 
-    let sig = scope::unify_signatures(&sig_inputs, &all_divs);
+    let sig = scope::unify_signatures(&sig_inputs, &all_divs, scope_ctx.kind == ScopeKind::Class);
 
     let ref_stmts = sig_inputs[0].0;
     let ref_node_positions = rewrite::collect_node_positions(ref_stmts);

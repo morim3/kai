@@ -41,7 +41,14 @@ pub struct BlockInterface {
 /// - `block`: the statements being extracted.
 /// - `after_block`: statements that come after the block in the same scope
 ///   (used to determine which stored variables are live-out).
-pub fn analyze_block(block: &[Stmt], after_block: &[Stmt]) -> BlockInterface {
+/// - `all_stores_as_outputs`: when true, ALL stored variables become outputs
+///   regardless of after-block usage. This is needed for class scope, where
+///   assignments create class attributes accessible externally.
+pub fn analyze_block(
+    block: &[Stmt],
+    after_block: &[Stmt],
+    all_stores_as_outputs: bool,
+) -> BlockInterface {
     let mut collector = VarCollector::new();
     for stmt in block {
         collector.visit_stmt(stmt);
@@ -50,17 +57,22 @@ pub fn analyze_block(block: &[Stmt], after_block: &[Stmt]) -> BlockInterface {
     // Inputs: loaded before being stored within the block.
     let inputs = collector.inputs();
 
-    // Determine which variables stored in the block are used after it.
-    let mut after_collector = VarCollector::new();
-    for stmt in after_block {
-        after_collector.visit_stmt(stmt);
-    }
-    let after_inputs = after_collector.inputs();
-    let outputs: Vec<String> = collector
-        .stores()
-        .into_iter()
-        .filter(|name| after_inputs.contains(name))
-        .collect();
+    let outputs = if all_stores_as_outputs {
+        // In class scope, all stores become class attributes (visible externally).
+        collector.stores()
+    } else {
+        // Determine which variables stored in the block are used after it.
+        let mut after_collector = VarCollector::new();
+        for stmt in after_block {
+            after_collector.visit_stmt(stmt);
+        }
+        let after_inputs = after_collector.inputs();
+        collector
+            .stores()
+            .into_iter()
+            .filter(|name| after_inputs.contains(name))
+            .collect()
+    };
 
     BlockInterface { inputs, outputs }
 }
@@ -158,13 +170,15 @@ fn collect_literal_params(all_divergences: &[Vec<Divergence>]) -> Vec<Vec<String
 ///
 /// Each entry in `blocks` is `(block_stmts, after_stmts)`.
 /// `divergences` contains the structural differences between each block and block 0.
+/// `all_stores_as_outputs`: when true, all stored variables become outputs (for class scope).
 pub fn unify_signatures(
     blocks: &[(&[Stmt], &[Stmt])],
     all_divergences: &[Vec<Divergence>],
+    all_stores_as_outputs: bool,
 ) -> FunctionSignature {
     let interfaces: Vec<BlockInterface> = blocks
         .iter()
-        .map(|(block, after)| analyze_block(block, after))
+        .map(|(block, after)| analyze_block(block, after, all_stores_as_outputs))
         .collect();
 
     // All blocks should have the same number of inputs/outputs (structurally identical).
@@ -375,7 +389,7 @@ mod tests {
     fn simple_inputs() {
         // `y = x + 1` — x is loaded, y is stored.
         let stmts = parse_stmts("y = x + 1");
-        let iface = analyze_block(&stmts, &[]);
+        let iface = analyze_block(&stmts, &[], false);
         assert_eq!(iface.inputs, vec!["x"]);
         assert_eq!(iface.outputs, Vec::<String>::new());
     }
@@ -383,7 +397,7 @@ mod tests {
     #[test]
     fn input_not_duplicated_when_loaded_twice() {
         let stmts = parse_stmts("y = x + x");
-        let iface = analyze_block(&stmts, &[]);
+        let iface = analyze_block(&stmts, &[], false);
         assert_eq!(iface.inputs, vec!["x"]);
     }
 
@@ -391,7 +405,7 @@ mod tests {
     fn store_then_load_is_not_input() {
         // `a = 1; b = a + 2` — `a` is stored first, so it's not an input.
         let stmts = parse_stmts("a = 1\nb = a + 2");
-        let iface = analyze_block(&stmts, &[]);
+        let iface = analyze_block(&stmts, &[], false);
         assert_eq!(iface.inputs, Vec::<String>::new());
     }
 
@@ -399,7 +413,7 @@ mod tests {
     fn outputs_used_after_block() {
         let block = parse_stmts("result = x + 1");
         let after = parse_stmts("print(result)");
-        let iface = analyze_block(&block, &after);
+        let iface = analyze_block(&block, &after, false);
         assert_eq!(iface.inputs, vec!["x"]);
         assert_eq!(iface.outputs, vec!["result"]);
     }
@@ -408,7 +422,7 @@ mod tests {
     fn outputs_not_used_after_block() {
         let block = parse_stmts("temp = x + 1");
         let after = parse_stmts("print(42)");
-        let iface = analyze_block(&block, &after);
+        let iface = analyze_block(&block, &after, false);
         assert_eq!(iface.inputs, vec!["x"]);
         assert_eq!(iface.outputs, Vec::<String>::new());
     }
@@ -418,7 +432,7 @@ mod tests {
         // `x += 1` — x is both loaded and stored.
         let block = parse_stmts("x += 1");
         let after = parse_stmts("print(x)");
-        let iface = analyze_block(&block, &after);
+        let iface = analyze_block(&block, &after, false);
         assert_eq!(iface.inputs, vec!["x"]);
         assert_eq!(iface.outputs, vec!["x"]);
     }
@@ -427,7 +441,7 @@ mod tests {
     fn multiple_inputs_and_outputs() {
         let block = parse_stmts("c = a + b\nd = c * 2");
         let after = parse_stmts("print(c, d)");
-        let iface = analyze_block(&block, &after);
+        let iface = analyze_block(&block, &after, false);
         assert_eq!(iface.inputs, vec!["a", "b"]);
         assert_eq!(iface.outputs, vec!["c", "d"]);
     }
@@ -450,6 +464,7 @@ mod tests {
                 (block_b.as_slice(), after_b.as_slice()),
             ],
             &[divs],
+            false,
         );
 
         assert_eq!(sig.params, vec!["arg_0", "arg_1"]);
@@ -494,6 +509,7 @@ mod tests {
                 (block_c.as_slice(), &[]),
             ],
             &[divs_ab, divs_ac],
+            false,
         );
 
         // 2 literal divergences become 2 params (no variable inputs)
@@ -509,7 +525,7 @@ mod tests {
     fn load_before_store_in_same_statement() {
         // `a = a + 1` — `a` on the RHS is loaded before being stored on the LHS.
         let block = parse_stmts("a = a + 1");
-        let iface = analyze_block(&block, &[]);
+        let iface = analyze_block(&block, &[], false);
         assert_eq!(
             iface.inputs,
             vec!["a"],
@@ -521,7 +537,7 @@ mod tests {
     fn builtins_excluded_from_inputs() {
         // `print(x)` — `print` is a builtin and should not appear as input.
         let block = parse_stmts("y = len(x)\nprint(y)");
-        let iface = analyze_block(&block, &[]);
+        let iface = analyze_block(&block, &[], false);
         assert_eq!(iface.inputs, vec!["x"], "builtins len/print excluded");
     }
 
@@ -530,7 +546,7 @@ mod tests {
         // `a, b = func()` — both a and b are stores.
         let block = parse_stmts("a, b = func()");
         let after = parse_stmts("print(a, b)");
-        let iface = analyze_block(&block, &after);
+        let iface = analyze_block(&block, &after, false);
         assert_eq!(iface.inputs, vec!["func"], "func is loaded");
         assert_eq!(
             iface.outputs,
@@ -545,7 +561,7 @@ mod tests {
         // appear as input (it's "defined" by del). If x was loaded before
         // being deleted, it's an input.
         let block = parse_stmts("y = x + 1\ndel x");
-        let iface = analyze_block(&block, &[]);
+        let iface = analyze_block(&block, &[], false);
         assert_eq!(iface.inputs, vec!["x"], "x loaded before del");
     }
 
@@ -554,7 +570,7 @@ mod tests {
         // `for i in items:` — i is a store, items is a load.
         let block = parse_stmts("for i in items:\n    pass");
         let after = parse_stmts("print(i)");
-        let iface = analyze_block(&block, &after);
+        let iface = analyze_block(&block, &after, false);
         assert_eq!(iface.inputs, vec!["items"]);
         assert_eq!(iface.outputs, vec!["i"]);
     }
@@ -563,7 +579,7 @@ mod tests {
     fn lambda_params_excluded_from_inputs() {
         // `lambda x: x + y` — x is a param (not input), y is a free variable (input).
         let block = parse_stmts("f = lambda x: x + y");
-        let iface = analyze_block(&block, &[]);
+        let iface = analyze_block(&block, &[], false);
         assert_eq!(iface.inputs, vec!["y"], "lambda param x must not be input");
     }
 
@@ -571,8 +587,21 @@ mod tests {
     fn lambda_default_is_input() {
         // `lambda x, y=z: x + y` — z is evaluated in the outer scope.
         let block = parse_stmts("f = lambda x, y=z: x + y");
-        let iface = analyze_block(&block, &[]);
+        let iface = analyze_block(&block, &[], false);
         assert_eq!(iface.inputs, vec!["z"], "default value z is an input");
+    }
+
+    #[test]
+    fn class_scope_all_stores_as_outputs() {
+        // In class scope, all stores become outputs (class attributes).
+        let block = parse_stmts("x = 1\ny = x + 2");
+        let after = parse_stmts("a = 10");
+        // With all_stores_as_outputs=false, only stores used in after_block are outputs.
+        let iface_normal = analyze_block(&block, &after, false);
+        assert_eq!(iface_normal.outputs, Vec::<String>::new());
+        // With all_stores_as_outputs=true, all stores become outputs.
+        let iface_class = analyze_block(&block, &after, true);
+        assert_eq!(iface_class.outputs, vec!["x", "y"]);
     }
 
     #[test]

@@ -1,9 +1,10 @@
 # kai: 4-5
 def setup():
     def extracted_func_0(arg_0, arg_1):
-        x = arg_0
-        y = x + arg_1
+        ret_0 = arg_0
+        ret_1 = ret_0 + arg_1
+        return ret_0, ret_1
 
     class Config:
-        extracted_func_0(1, 2)
-        extracted_func_0(10, 20)
+        x, y = extracted_func_0(1, 2)
+        a, b = extracted_func_0(10, 20)
