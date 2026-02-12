@@ -531,345 +531,305 @@ mod tests {
     use super::*;
     use crate::test_utils::parse_stmts;
 
-    #[test]
-    fn detects_name_divergence() {
-        let src_a = "x = a + 1";
-        let src_b = "y = b + 1";
+    /// Shorthand constructors for test readability.
+    fn n(a: &str, b: &str) -> Divergence {
+        Divergence::Name(a.into(), b.into())
+    }
+    fn l(a: &str, b: &str) -> Divergence {
+        Divergence::Literal(a.into(), b.into())
+    }
+
+    /// Parse two sources and return the divergence list.
+    fn divs(src_a: &str, src_b: &str) -> Vec<Divergence> {
         let a = parse_stmts(src_a);
         let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert_eq!(divs.len(), 2);
-        assert_eq!(divs[0], Divergence::Name("a".into(), "b".into()));
-        assert_eq!(divs[1], Divergence::Name("x".into(), "y".into()));
+        extract_divergences(&a, &b, src_a, src_b).unwrap()
+    }
+
+    // --- Basic divergence types ---
+
+    #[test]
+    fn name_divergence() {
+        assert_eq!(
+            divs("x = a + 1", "y = b + 1"),
+            vec![n("a", "b"), n("x", "y")]
+        );
     }
 
     #[test]
-    fn detects_literal_divergence() {
-        let src_a = "x = 1 + 2";
-        let src_b = "x = 100 + 200";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert_eq!(divs.len(), 2);
-        assert_eq!(divs[0], Divergence::Literal("1".into(), "100".into()));
-        assert_eq!(divs[1], Divergence::Literal("2".into(), "200".into()));
+    fn literal_divergence() {
+        assert_eq!(
+            divs("x = 1 + 2", "x = 100 + 200"),
+            vec![l("1", "100"), l("2", "200")]
+        );
     }
 
     #[test]
     fn no_divergence_for_identical_code() {
-        let src = "x = 1 + 2";
-        let a = parse_stmts(src);
-        let b = parse_stmts(src);
-        let divs = extract_divergences(&a, &b, src, src).unwrap();
-        assert!(divs.is_empty());
+        assert!(divs("x = 1 + 2", "x = 1 + 2").is_empty());
     }
 
     #[test]
-    fn mixed_name_and_literal_divergence() {
-        let src_a = "result = x + 10";
-        let src_b = "output = y + 20";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert_eq!(divs.len(), 3);
-        assert_eq!(divs[0], Divergence::Name("x".into(), "y".into()));
-        assert_eq!(divs[1], Divergence::Literal("10".into(), "20".into()));
-        assert_eq!(divs[2], Divergence::Name("result".into(), "output".into()));
-    }
-
-    #[test]
-    fn divergence_inside_if_body() {
-        let src_a = "if x > 0:\n    a = 1";
-        let src_b = "if y > 0:\n    b = 2";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        // test: x vs y, body: a=1 vs b=2 (literal 1 vs 2, name a vs b)
-        assert_eq!(divs.len(), 3);
-        assert_eq!(divs[0], Divergence::Name("x".into(), "y".into()));
-        assert_eq!(divs[1], Divergence::Literal("1".into(), "2".into()));
-        assert_eq!(divs[2], Divergence::Name("a".into(), "b".into()));
-    }
-
-    #[test]
-    fn divergence_inside_for_loop() {
-        let src_a = "for i in items:\n    x = i + 1";
-        let src_b = "for j in data:\n    y = j + 2";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        // iter: items vs data, target: i vs j, body: i vs j + 1 vs 2, x vs y
-        assert_eq!(divs.len(), 5);
-        assert_eq!(divs[0], Divergence::Name("items".into(), "data".into()));
-        assert_eq!(divs[1], Divergence::Name("i".into(), "j".into()));
-        assert_eq!(divs[2], Divergence::Name("i".into(), "j".into()));
-        assert_eq!(divs[3], Divergence::Literal("1".into(), "2".into()));
-        assert_eq!(divs[4], Divergence::Name("x".into(), "y".into()));
-    }
-
-    #[test]
-    fn divergence_inside_while_loop() {
-        let src_a = "while a < 10:\n    a += 1";
-        let src_b = "while b < 20:\n    b += 1";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        // test: a vs b, literal: 10 vs 20, body aug_assign: 1 vs 1 (same), a vs b
-        assert_eq!(divs.len(), 3);
-        assert_eq!(divs[0], Divergence::Name("a".into(), "b".into()));
-        assert_eq!(divs[1], Divergence::Literal("10".into(), "20".into()));
-        assert_eq!(divs[2], Divergence::Name("a".into(), "b".into()));
-    }
-
-    #[test]
-    fn divergence_in_return_statement() {
-        let src_a = "return x + 1";
-        let src_b = "return y + 2";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert_eq!(divs.len(), 2);
-        assert_eq!(divs[0], Divergence::Name("x".into(), "y".into()));
-        assert_eq!(divs[1], Divergence::Literal("1".into(), "2".into()));
-    }
-
-    #[test]
-    fn divergence_in_with_statement() {
-        let src_a = "with open(file_a) as f:\n    data = f.read()";
-        let src_b = "with open(file_b) as g:\n    data = g.read()";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert!(
-            divs.iter()
-                .any(|d| *d == Divergence::Name("file_a".into(), "file_b".into()))
-        );
-        assert!(
-            divs.iter()
-                .any(|d| *d == Divergence::Name("f".into(), "g".into()))
-        );
-    }
-
-    #[test]
-    fn divergence_in_try_statement() {
-        let src_a = "try:\n    x = func_a()\nexcept Exception as e:\n    handle(e)";
-        let src_b = "try:\n    y = func_b()\nexcept Exception as e:\n    handle(e)";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert!(
-            divs.iter()
-                .any(|d| *d == Divergence::Name("func_a".into(), "func_b".into()))
-        );
-        assert!(
-            divs.iter()
-                .any(|d| *d == Divergence::Name("x".into(), "y".into()))
-        );
-    }
-
-    #[test]
-    fn divergence_in_assert_statement() {
-        let src_a = "assert x > 0, \"x must be positive\"";
-        let src_b = "assert y > 0, \"y must be positive\"";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert!(
-            divs.iter()
-                .any(|d| *d == Divergence::Name("x".into(), "y".into()))
-        );
-    }
-
-    #[test]
-    fn divergence_in_raise_statement() {
-        let src_a = "raise ValueError(msg_a)";
-        let src_b = "raise ValueError(msg_b)";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert_eq!(divs, vec![Divergence::Name("msg_a".into(), "msg_b".into())]);
-    }
-
-    #[test]
-    fn divergence_in_list_comprehension() {
-        let src_a = "result = [x + 1 for x in items]";
-        let src_b = "result = [y + 2 for y in data]";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        // elt: x vs y, literal: 1 vs 2, target: x vs y, iter: items vs data
-        assert!(divs.contains(&Divergence::Name("x".into(), "y".into())));
-        assert!(divs.contains(&Divergence::Literal("1".into(), "2".into())));
-        assert!(divs.contains(&Divergence::Name("items".into(), "data".into())));
-    }
-
-    #[test]
-    fn divergence_in_dict_comprehension() {
-        let src_a = "d = {k: v for k, v in pairs_a}";
-        let src_b = "d = {k: v for k, v in pairs_b}";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+    fn mixed_name_and_literal() {
         assert_eq!(
-            divs,
-            vec![Divergence::Name("pairs_a".into(), "pairs_b".into())]
+            divs("result = x + 10", "output = y + 20"),
+            vec![n("x", "y"), l("10", "20"), n("result", "output")]
+        );
+    }
+
+    // --- Compound statements ---
+
+    #[test]
+    fn if_body() {
+        assert_eq!(
+            divs("if x > 0:\n    a = 1", "if y > 0:\n    b = 2"),
+            vec![n("x", "y"), l("1", "2"), n("a", "b")]
         );
     }
 
     #[test]
-    fn divergence_in_generator_expression() {
-        let src_a = "s = sum(x * 2 for x in items)";
-        let src_b = "s = sum(y * 3 for y in data)";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert!(divs.contains(&Divergence::Name("x".into(), "y".into())));
-        assert!(divs.contains(&Divergence::Literal("2".into(), "3".into())));
-        assert!(divs.contains(&Divergence::Name("items".into(), "data".into())));
-    }
-
-    #[test]
-    fn divergence_in_comprehension_with_if() {
-        let src_a = "[x for x in items if x > 0]";
-        let src_b = "[y for y in data if y > 0]";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert!(divs.contains(&Divergence::Name("x".into(), "y".into())));
-        assert!(divs.contains(&Divergence::Name("items".into(), "data".into())));
-    }
-
-    #[test]
-    fn divergence_in_fstring() {
-        let src_a = "s = f\"hello {name}\"";
-        let src_b = "s = f\"hello {user}\"";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert!(divs.contains(&Divergence::Name("name".into(), "user".into())));
-    }
-
-    #[test]
-    fn divergence_in_fstring_multiple_exprs() {
-        let src_a = "s = f\"{a} and {b}\"";
-        let src_b = "s = f\"{x} and {y}\"";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+    fn for_loop() {
         assert_eq!(
-            divs,
+            divs(
+                "for i in items:\n    x = i + 1",
+                "for j in data:\n    y = j + 2"
+            ),
             vec![
-                Divergence::Name("a".into(), "x".into()),
-                Divergence::Name("b".into(), "y".into()),
+                n("items", "data"),
+                n("i", "j"),
+                n("i", "j"),
+                l("1", "2"),
+                n("x", "y")
             ]
         );
     }
 
     #[test]
-    fn divergence_in_lambda() {
-        let src_a = "f = lambda x: x + 1";
-        let src_b = "f = lambda y: y + 2";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert!(divs.contains(&Divergence::Name("x".into(), "y".into())));
-        assert!(divs.contains(&Divergence::Literal("1".into(), "2".into())));
-    }
-
-    #[test]
-    fn divergence_in_lambda_with_default() {
-        let src_a = "f = lambda x, y=10: x + y";
-        let src_b = "f = lambda a, b=20: a + b";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert!(divs.contains(&Divergence::Name("x".into(), "a".into())));
-        assert!(divs.contains(&Divergence::Name("y".into(), "b".into())));
-        assert!(divs.contains(&Divergence::Literal("10".into(), "20".into())));
-    }
-
-    #[test]
-    fn divergence_in_match_statement() {
-        let src_a = "match cmd_a:\n    case 1:\n        x = 10";
-        let src_b = "match cmd_b:\n    case 2:\n        y = 20";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert!(divs.contains(&Divergence::Name("cmd_a".into(), "cmd_b".into())));
-        assert!(divs.contains(&Divergence::Literal("1".into(), "2".into())));
-        assert!(divs.contains(&Divergence::Name("x".into(), "y".into())));
-        assert!(divs.contains(&Divergence::Literal("10".into(), "20".into())));
-    }
-
-    #[test]
-    fn divergence_in_match_with_as_pattern() {
-        let src_a = "match val:\n    case x as result_a:\n        pass";
-        let src_b = "match val:\n    case y as result_b:\n        pass";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert!(divs.contains(&Divergence::Name("result_a".into(), "result_b".into())));
-    }
-
-    #[test]
-    fn divergence_in_nested_function_def() {
-        let src_a = "def helper_a(x):\n    return x + 1";
-        let src_b = "def helper_b(y):\n    return y + 2";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert!(divs.contains(&Divergence::Name("helper_a".into(), "helper_b".into())));
-        assert!(divs.contains(&Divergence::Name("x".into(), "y".into())));
-        assert!(divs.contains(&Divergence::Literal("1".into(), "2".into())));
-    }
-
-    #[test]
-    fn divergence_in_function_def_body_only() {
-        let src_a = "def handler(event):\n    process(event, config_a)";
-        let src_b = "def handler(event):\n    process(event, config_b)";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+    fn while_loop() {
         assert_eq!(
-            divs,
-            vec![Divergence::Name("config_a".into(), "config_b".into())]
+            divs("while a < 10:\n    a += 1", "while b < 20:\n    b += 1"),
+            vec![n("a", "b"), l("10", "20"), n("a", "b")]
         );
     }
 
     #[test]
-    fn divergence_in_class_def() {
-        let src_a = "class ViewA(Base):\n    name = \"a\"";
-        let src_b = "class ViewB(Base):\n    name = \"b\"";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert!(divs.contains(&Divergence::Name("ViewA".into(), "ViewB".into())));
-        assert!(divs.contains(&Divergence::Literal("\"a\"".into(), "\"b\"".into())));
-    }
-
-    #[test]
-    fn divergence_in_call_keyword_args() {
-        let src_a = "func(key=value_a)";
-        let src_b = "func(key=value_b)";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+    fn return_statement() {
         assert_eq!(
-            divs,
-            vec![Divergence::Name("value_a".into(), "value_b".into())]
+            divs("return x + 1", "return y + 2"),
+            vec![n("x", "y"), l("1", "2")]
         );
     }
 
     #[test]
-    fn divergence_in_nested_comprehension() {
-        let src_a = "result = [x + y for x in items_a for y in items_b]";
-        let src_b = "result = [a + b for a in data_a for b in data_b]";
-        let a = parse_stmts(src_a);
-        let b = parse_stmts(src_b);
-        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
-        assert!(divs.contains(&Divergence::Name("x".into(), "a".into())));
-        assert!(divs.contains(&Divergence::Name("y".into(), "b".into())));
-        assert!(divs.contains(&Divergence::Name("items_a".into(), "data_a".into())));
-        assert!(divs.contains(&Divergence::Name("items_b".into(), "data_b".into())));
+    fn with_statement() {
+        assert_eq!(
+            divs(
+                "with open(file_a) as f:\n    data = f.read()",
+                "with open(file_b) as g:\n    data = g.read()"
+            ),
+            vec![n("file_a", "file_b"), n("f", "g"), n("f", "g")]
+        );
+    }
+
+    #[test]
+    fn try_statement() {
+        assert_eq!(
+            divs(
+                "try:\n    x = func_a()\nexcept Exception as e:\n    handle(e)",
+                "try:\n    y = func_b()\nexcept Exception as e:\n    handle(e)"
+            ),
+            vec![n("func_a", "func_b"), n("x", "y")]
+        );
+    }
+
+    #[test]
+    fn assert_statement() {
+        assert_eq!(
+            divs(
+                "assert x > 0, \"x must be positive\"",
+                "assert y > 0, \"y must be positive\""
+            ),
+            vec![
+                n("x", "y"),
+                l("\"x must be positive\"", "\"y must be positive\"")
+            ]
+        );
+    }
+
+    #[test]
+    fn raise_statement() {
+        assert_eq!(
+            divs("raise ValueError(msg_a)", "raise ValueError(msg_b)"),
+            vec![n("msg_a", "msg_b")]
+        );
+    }
+
+    #[test]
+    fn match_statement() {
+        assert_eq!(
+            divs(
+                "match cmd_a:\n    case 1:\n        x = 10",
+                "match cmd_b:\n    case 2:\n        y = 20"
+            ),
+            vec![n("cmd_a", "cmd_b"), l("1", "2"), l("10", "20"), n("x", "y")]
+        );
+    }
+
+    #[test]
+    fn match_as_pattern() {
+        assert_eq!(
+            divs(
+                "match val:\n    case x as result_a:\n        pass",
+                "match val:\n    case y as result_b:\n        pass"
+            ),
+            vec![n("x", "y"), n("result_a", "result_b")]
+        );
+    }
+
+    // --- Expressions ---
+
+    #[test]
+    fn call_keyword_args() {
+        assert_eq!(
+            divs("func(key=value_a)", "func(key=value_b)"),
+            vec![n("value_a", "value_b")]
+        );
+    }
+
+    #[test]
+    fn list_comprehension() {
+        assert_eq!(
+            divs(
+                "result = [x + 1 for x in items]",
+                "result = [y + 2 for y in data]"
+            ),
+            vec![n("x", "y"), l("1", "2"), n("x", "y"), n("items", "data")]
+        );
+    }
+
+    #[test]
+    fn dict_comprehension() {
+        assert_eq!(
+            divs(
+                "d = {k: v for k, v in pairs_a}",
+                "d = {k: v for k, v in pairs_b}"
+            ),
+            vec![n("pairs_a", "pairs_b")]
+        );
+    }
+
+    #[test]
+    fn generator_expression() {
+        assert_eq!(
+            divs(
+                "s = sum(x * 2 for x in items)",
+                "s = sum(y * 3 for y in data)"
+            ),
+            vec![n("x", "y"), l("2", "3"), n("x", "y"), n("items", "data")]
+        );
+    }
+
+    #[test]
+    fn comprehension_with_if() {
+        assert_eq!(
+            divs("[x for x in items if x > 0]", "[y for y in data if y > 0]"),
+            vec![n("x", "y"), n("x", "y"), n("items", "data"), n("x", "y")]
+        );
+    }
+
+    #[test]
+    fn nested_comprehension() {
+        assert_eq!(
+            divs(
+                "result = [x + y for x in items_a for y in items_b]",
+                "result = [a + b for a in data_a for b in data_b]"
+            ),
+            vec![
+                n("x", "a"),
+                n("y", "b"),
+                n("x", "a"),
+                n("items_a", "data_a"),
+                n("y", "b"),
+                n("items_b", "data_b"),
+            ]
+        );
+    }
+
+    #[test]
+    fn fstring() {
+        assert_eq!(
+            divs("s = f\"hello {name}\"", "s = f\"hello {user}\""),
+            vec![n("name", "user")]
+        );
+    }
+
+    #[test]
+    fn fstring_multiple_exprs() {
+        assert_eq!(
+            divs("s = f\"{a} and {b}\"", "s = f\"{x} and {y}\""),
+            vec![n("a", "x"), n("b", "y")]
+        );
+    }
+
+    #[test]
+    fn lambda() {
+        assert_eq!(
+            divs("f = lambda x: x + 1", "f = lambda y: y + 2"),
+            vec![n("x", "y"), n("x", "y"), l("1", "2")]
+        );
+    }
+
+    #[test]
+    fn lambda_with_default() {
+        assert_eq!(
+            divs("f = lambda x, y=10: x + y", "f = lambda a, b=20: a + b"),
+            vec![
+                n("x", "a"),
+                n("y", "b"),
+                l("10", "20"),
+                n("x", "a"),
+                n("y", "b")
+            ]
+        );
+    }
+
+    // --- Nested definitions ---
+
+    #[test]
+    fn nested_function_def() {
+        assert_eq!(
+            divs(
+                "def helper_a(x):\n    return x + 1",
+                "def helper_b(y):\n    return y + 2"
+            ),
+            vec![
+                n("helper_a", "helper_b"),
+                n("x", "y"),
+                n("x", "y"),
+                l("1", "2")
+            ]
+        );
+    }
+
+    #[test]
+    fn function_def_body_only() {
+        assert_eq!(
+            divs(
+                "def handler(event):\n    process(event, config_a)",
+                "def handler(event):\n    process(event, config_b)"
+            ),
+            vec![n("config_a", "config_b")]
+        );
+    }
+
+    #[test]
+    fn class_def() {
+        assert_eq!(
+            divs(
+                "class ViewA(Base):\n    name = \"a\"",
+                "class ViewB(Base):\n    name = \"b\""
+            ),
+            vec![n("ViewA", "ViewB"), l("\"a\"", "\"b\"")]
+        );
     }
 }
