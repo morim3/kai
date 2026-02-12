@@ -188,33 +188,18 @@ mod tests {
     #[test]
     fn safe_when_nested() {
         let cases: &[(&str, &str)] = &[
-            (
-                "for x in y:\n    break",
-                "break inside block's own loop",
-            ),
+            ("for x in y:\n    break", "break inside block's own loop"),
             (
                 "while True:\n    continue",
                 "continue inside block's own loop",
             ),
-            (
-                "def f():\n    return x",
-                "return inside nested function",
-            ),
-            (
-                "f = lambda: (yield x)",
-                "yield inside lambda",
-            ),
-            (
-                "x = 1\ny = x + 2",
-                "no flow control at all",
-            ),
+            ("def f():\n    return x", "return inside nested function"),
+            ("f = lambda: (yield x)", "yield inside lambda"),
+            ("x = 1\ny = x + 2", "no flow control at all"),
         ];
         for (code, label) in cases {
             let stmts = parse_stmts(code);
-            assert!(
-                check_extractable(&stmts).is_ok(),
-                "{label}: should be safe"
-            );
+            assert!(check_extractable(&stmts).is_ok(), "{label}: should be safe");
         }
     }
 }

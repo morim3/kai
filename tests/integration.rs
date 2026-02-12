@@ -124,8 +124,8 @@ fn run_multi_fixture(dir: &Path) -> Result<(), String> {
     sources.extend(extra_sources.iter().map(|s| s.as_str()));
 
     // Stage 1: Scan all files.
-    let all_blocks = kai::scan_all_sources(&sources, start, end)
-        .map_err(|e| format!("scan failed: {e}"))?;
+    let all_blocks =
+        kai::scan_all_sources(&sources, start, end).map_err(|e| format!("scan failed: {e}"))?;
 
     // Stage 2: Plan.
     let plan = kai::plan_extraction_multi(&sources, &all_blocks, start, end)

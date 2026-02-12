@@ -2,7 +2,9 @@ use std::hash::{Hash, Hasher};
 
 use anyhow::{Result, bail};
 use ruff_python_ast::visitor::{Visitor, walk_comprehension, walk_expr, walk_keyword, walk_stmt};
-use ruff_python_ast::{BoolOp, CmpOp, Comprehension, Expr, ExprContext, Keyword, Operator, Stmt, UnaryOp};
+use ruff_python_ast::{
+    BoolOp, CmpOp, Comprehension, Expr, ExprContext, Keyword, Operator, Stmt, UnaryOp,
+};
 use ruff_text_size::Ranged;
 use rustc_hash::FxHasher;
 

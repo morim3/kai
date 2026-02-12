@@ -732,7 +732,10 @@ mod tests {
             func_name,
             &plan.scope_ctx,
         );
-        assert!(validate_output(&result).is_ok(), "output must be valid Python");
+        assert!(
+            validate_output(&result).is_ok(),
+            "output must be valid Python"
+        );
         result
     }
 
@@ -869,7 +872,10 @@ mod tests {
         let plan = crate::plan_extraction(source, &blocks, 1, 1).unwrap();
         let mut sig = plan.sig.clone();
 
-        assert_eq!(sig.returns[0], "arg_0", "unify_signatures links output=input");
+        assert_eq!(
+            sig.returns[0], "arg_0",
+            "unify_signatures links output=input"
+        );
 
         // Simulate param rename and auto-sync using the extracted helper.
         sig.params[0] = "x".into();
