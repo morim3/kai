@@ -208,8 +208,12 @@ Rustの堅牢なエコシステム、特にPython解析のデファクトスタ�
   2. **FString / TString**: `diff_interpolated_elements()` ヘルパーで `Interpolation` 内の式と `format_spec` を再帰的に diff。
   3. **Lambda**: `diff_parameters()` ヘルパーでパラメータ名と default 値を diff。`diff_param_names()` で Identifier の Name divergence を手動処理。
   4. **Match**: `diff_patterns()` 関数で Pattern の 8 バリアント全てを再帰的に diff。subject, guard, body も diff。
-  5. FunctionDef, ClassDef, TypeAlias, IpyEscapeCommand は引き続き not-implemented（ネスト定義やレア構文）。
-* **テスト:** ユニットテスト 13 件追加（23→計23件中の新規13件）、統合フィクスチャ 4 件追加（comprehension, fstring, lambda, match）。全38フィクスチャ通過。
+  5. **FunctionDef**: name, decorator_list, parameters (`diff_parameters` 再利用), returns, body を diff。
+  6. **ClassDef**: name, decorator_list, base classes (arguments), body を diff。
+  7. **バグ修正**: `Expr::Call` で keyword 引数の value が diff されていなかった問題を修正。
+  8. TypeAlias, IpyEscapeCommand は引き続き not-implemented（レア構文）。
+* **テスト:** ユニットテスト 17 件追加、統合フィクスチャ 4 件追加（comprehension, fstring, lambda, match）。全38フィクスチャ通過。
 * **Exit Criteria:**
-  * 内包表記、f-string、lambda、match を含むブロックで正しくパラメータ化されること。✅
+  * 内包表記、f-string、lambda、match、FunctionDef、ClassDef を含むブロックで正しくパラメータ化されること。✅
+  * Call の keyword 引数の divergence が正しく抽出されること。✅
   * 既存テストが全て通過すること。✅

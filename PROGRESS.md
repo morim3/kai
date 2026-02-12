@@ -51,7 +51,7 @@
 
 ## Next Steps
 - 新機能のアイデアは design_doc.md を参照
-- 候補: LSP 統合、IDE プラグイン、デコレータ/`with` 文対応 等
+- 残り not-implemented: TypeAlias, IpyEscapeCommand のみ（レア構文）
 
 ## Failed Approaches
 - モジュールスコープ名の自動除外: revert済み

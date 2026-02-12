@@ -136,12 +136,33 @@ fn diff_stmts(a: &Stmt, b: &Stmt, sa: &str, sb: &str, out: &mut Vec<Divergence>)
         | (Stmt::ImportFrom(_), Stmt::ImportFrom(_))
         | (Stmt::Global(_), Stmt::Global(_))
         | (Stmt::Nonlocal(_), Stmt::Nonlocal(_)) => {}
-        // Not yet implemented.
-        (Stmt::FunctionDef(_), Stmt::FunctionDef(_)) => {
-            bail!("divergence extraction not implemented for nested function definitions");
+        (Stmt::FunctionDef(a), Stmt::FunctionDef(b)) => {
+            if a.name.as_str() != b.name.as_str() {
+                out.push(Divergence::Name(a.name.to_string(), b.name.to_string()));
+            }
+            for (da, db) in a.decorator_list.iter().zip(b.decorator_list.iter()) {
+                diff_exprs(&da.expression, &db.expression, sa, sb, out)?;
+            }
+            diff_parameters(&a.parameters, &b.parameters, sa, sb, out)?;
+            if let (Some(ra), Some(rb)) = (&a.returns, &b.returns) {
+                diff_exprs(ra, rb, sa, sb, out)?;
+            }
+            diff_stmt_bodies(&a.body, &b.body, sa, sb, out)?;
         }
-        (Stmt::ClassDef(_), Stmt::ClassDef(_)) => {
-            bail!("divergence extraction not implemented for nested class definitions");
+        (Stmt::ClassDef(a), Stmt::ClassDef(b)) => {
+            if a.name.as_str() != b.name.as_str() {
+                out.push(Divergence::Name(a.name.to_string(), b.name.to_string()));
+            }
+            for (da, db) in a.decorator_list.iter().zip(b.decorator_list.iter()) {
+                diff_exprs(&da.expression, &db.expression, sa, sb, out)?;
+            }
+            if let (Some(args_a), Some(args_b)) = (&a.arguments, &b.arguments) {
+                diff_expr_slices(&args_a.args, &args_b.args, sa, sb, out)?;
+                for (ka, kb) in args_a.keywords.iter().zip(args_b.keywords.iter()) {
+                    diff_exprs(&ka.value, &kb.value, sa, sb, out)?;
+                }
+            }
+            diff_stmt_bodies(&a.body, &b.body, sa, sb, out)?;
         }
         (Stmt::Match(a), Stmt::Match(b)) => {
             diff_exprs(&a.subject, &b.subject, sa, sb, out)?;
@@ -237,6 +258,9 @@ fn diff_exprs(a: &Expr, b: &Expr, sa: &str, sb: &str, out: &mut Vec<Divergence>)
         (Expr::Call(a), Expr::Call(b)) => {
             diff_exprs(&a.func, &b.func, sa, sb, out)?;
             diff_expr_slices(&a.arguments.args, &b.arguments.args, sa, sb, out)?;
+            for (ka, kb) in a.arguments.keywords.iter().zip(b.arguments.keywords.iter()) {
+                diff_exprs(&ka.value, &kb.value, sa, sb, out)?;
+            }
         }
         (Expr::Compare(a), Expr::Compare(b)) => {
             diff_exprs(&a.left, &b.left, sa, sb, out)?;
@@ -296,7 +320,6 @@ fn diff_exprs(a: &Expr, b: &Expr, sa: &str, sb: &str, out: &mut Vec<Divergence>)
         (Expr::YieldFrom(a), Expr::YieldFrom(b)) => {
             diff_exprs(&a.value, &b.value, sa, sb, out)?;
         }
-        // Not yet implemented.
         (Expr::Lambda(a), Expr::Lambda(b)) => {
             if let (Some(pa), Some(pb)) = (&a.parameters, &b.parameters) {
                 diff_parameters(pa, pb, sa, sb, out)?;
@@ -393,7 +416,7 @@ fn diff_interpolated_elements(
     Ok(())
 }
 
-/// Diff parameter default values and names across two `Parameters` structs (used by Lambda).
+/// Diff parameter default values and names across two `Parameters` structs.
 fn diff_parameters(
     a: &ruff_python_ast::Parameters,
     b: &ruff_python_ast::Parameters,
@@ -785,6 +808,55 @@ mod tests {
         let b = parse_stmts(src_b);
         let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
         assert!(divs.contains(&Divergence::Name("result_a".into(), "result_b".into())));
+    }
+
+    #[test]
+    fn divergence_in_nested_function_def() {
+        let src_a = "def helper_a(x):\n    return x + 1";
+        let src_b = "def helper_b(y):\n    return y + 2";
+        let a = parse_stmts(src_a);
+        let b = parse_stmts(src_b);
+        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+        assert!(divs.contains(&Divergence::Name("helper_a".into(), "helper_b".into())));
+        assert!(divs.contains(&Divergence::Name("x".into(), "y".into())));
+        assert!(divs.contains(&Divergence::Literal("1".into(), "2".into())));
+    }
+
+    #[test]
+    fn divergence_in_function_def_body_only() {
+        let src_a = "def handler(event):\n    process(event, config_a)";
+        let src_b = "def handler(event):\n    process(event, config_b)";
+        let a = parse_stmts(src_a);
+        let b = parse_stmts(src_b);
+        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+        assert_eq!(
+            divs,
+            vec![Divergence::Name("config_a".into(), "config_b".into())]
+        );
+    }
+
+    #[test]
+    fn divergence_in_class_def() {
+        let src_a = "class ViewA(Base):\n    name = \"a\"";
+        let src_b = "class ViewB(Base):\n    name = \"b\"";
+        let a = parse_stmts(src_a);
+        let b = parse_stmts(src_b);
+        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+        assert!(divs.contains(&Divergence::Name("ViewA".into(), "ViewB".into())));
+        assert!(divs.contains(&Divergence::Literal("\"a\"".into(), "\"b\"".into())));
+    }
+
+    #[test]
+    fn divergence_in_call_keyword_args() {
+        let src_a = "func(key=value_a)";
+        let src_b = "func(key=value_b)";
+        let a = parse_stmts(src_a);
+        let b = parse_stmts(src_b);
+        let divs = extract_divergences(&a, &b, src_a, src_b).unwrap();
+        assert_eq!(
+            divs,
+            vec![Divergence::Name("value_a".into(), "value_b".into())]
+        );
     }
 
     #[test]
