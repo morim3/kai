@@ -280,15 +280,64 @@ impl VarCollector {
 
 impl<'a> Visitor<'a> for VarCollector {
     fn visit_expr(&mut self, expr: &'a Expr) {
-        if let Expr::Name(name) = expr {
-            let action = match name.ctx {
-                ExprContext::Load => VarAction::Load,
-                ExprContext::Store | ExprContext::Del => VarAction::Store,
-                ExprContext::Invalid => return,
-            };
-            self.events.push((name.id.to_string(), action));
-        } else {
-            walk_expr(self, expr);
+        match expr {
+            Expr::Name(name) => {
+                let action = match name.ctx {
+                    ExprContext::Load => VarAction::Load,
+                    ExprContext::Store | ExprContext::Del => VarAction::Store,
+                    ExprContext::Invalid => return,
+                };
+                self.events.push((name.id.to_string(), action));
+            }
+            // Lambda creates a new scope. Use a nested collector so params
+            // don't leak into the outer scope. Only free variables propagate.
+            Expr::Lambda(lambda) => {
+                // Default values are evaluated in the outer scope.
+                if let Some(ref params) = lambda.parameters {
+                    for param in params
+                        .posonlyargs
+                        .iter()
+                        .chain(&params.args)
+                        .chain(&params.kwonlyargs)
+                    {
+                        if let Some(ref default) = param.default {
+                            self.visit_expr(default);
+                        }
+                    }
+                }
+                // Nested collector: register params as stores, walk body.
+                let mut inner = VarCollector::new();
+                if let Some(ref params) = lambda.parameters {
+                    for param in params
+                        .posonlyargs
+                        .iter()
+                        .chain(&params.args)
+                        .chain(&params.kwonlyargs)
+                    {
+                        inner
+                            .events
+                            .push((param.parameter.name.to_string(), VarAction::Store));
+                    }
+                    if let Some(ref vararg) = params.vararg {
+                        inner
+                            .events
+                            .push((vararg.name.to_string(), VarAction::Store));
+                    }
+                    if let Some(ref kwarg) = params.kwarg {
+                        inner
+                            .events
+                            .push((kwarg.name.to_string(), VarAction::Store));
+                    }
+                }
+                inner.visit_expr(&lambda.body);
+                // Merge free variables as loads in the outer scope.
+                for name in inner.inputs() {
+                    self.events.push((name, VarAction::Load));
+                }
+            }
+            _ => {
+                walk_expr(self, expr);
+            }
         }
     }
 
@@ -508,6 +557,22 @@ mod tests {
         let iface = analyze_block(&block, &after);
         assert_eq!(iface.inputs, vec!["items"]);
         assert_eq!(iface.outputs, vec!["i"]);
+    }
+
+    #[test]
+    fn lambda_params_excluded_from_inputs() {
+        // `lambda x: x + y` — x is a param (not input), y is a free variable (input).
+        let block = parse_stmts("f = lambda x: x + y");
+        let iface = analyze_block(&block, &[]);
+        assert_eq!(iface.inputs, vec!["y"], "lambda param x must not be input");
+    }
+
+    #[test]
+    fn lambda_default_is_input() {
+        // `lambda x, y=z: x + y` — z is evaluated in the outer scope.
+        let block = parse_stmts("f = lambda x, y=z: x + y");
+        let iface = analyze_block(&block, &[]);
+        assert_eq!(iface.inputs, vec!["z"], "default value z is an input");
     }
 
     #[test]

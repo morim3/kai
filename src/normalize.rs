@@ -1,8 +1,8 @@
 use std::hash::{Hash, Hasher};
 
 use anyhow::{Result, bail};
-use ruff_python_ast::visitor::{Visitor, walk_expr, walk_stmt};
-use ruff_python_ast::{BoolOp, CmpOp, Expr, ExprContext, Operator, Stmt, UnaryOp};
+use ruff_python_ast::visitor::{Visitor, walk_comprehension, walk_expr, walk_keyword, walk_stmt};
+use ruff_python_ast::{BoolOp, CmpOp, Comprehension, Expr, ExprContext, Keyword, Operator, Stmt, UnaryOp};
 use ruff_text_size::Ranged;
 use rustc_hash::FxHasher;
 
@@ -159,6 +159,13 @@ impl<'a> Visitor<'a> for NormalizeVisitor {
             Stmt::IpyEscapeCommand(_) => "IpyEscapeCommand",
         };
         self.hash_tag(tag);
+        // Hash non-Expr fields that walk_stmt doesn't visit.
+        match stmt {
+            Stmt::For(f) => f.is_async.hash(&mut self.hasher),
+            Stmt::With(w) => w.is_async.hash(&mut self.hasher),
+            Stmt::Try(t) => t.is_star.hash(&mut self.hasher),
+            _ => {}
+        }
         walk_stmt(self, stmt);
     }
 
@@ -183,6 +190,13 @@ impl<'a> Visitor<'a> for NormalizeVisitor {
                 self.hash_tag("CONSTANT");
             }
 
+            // Attribute: hash the .attr Identifier (not visited by walk_expr).
+            Expr::Attribute(attr) => {
+                self.hash_tag("Attribute");
+                self.hash_tag(attr.attr.as_str());
+                walk_expr(self, expr);
+            }
+
             // For everything else, hash the node kind and recurse.
             _ => {
                 let tag = match expr {
@@ -205,7 +219,6 @@ impl<'a> Visitor<'a> for NormalizeVisitor {
                     Expr::Call(_) => "Call",
                     Expr::FString(_) => "FString",
                     Expr::TString(_) => "TString",
-                    Expr::Attribute(_) => "Attribute",
                     Expr::Subscript(_) => "Subscript",
                     Expr::Starred(_) => "Starred",
                     Expr::List(_) => "List",
@@ -214,6 +227,7 @@ impl<'a> Visitor<'a> for NormalizeVisitor {
                     Expr::IpyEscapeCommand(_) => "IpyEscapeCommand",
                     // Already handled above.
                     Expr::Name(_)
+                    | Expr::Attribute(_)
                     | Expr::NumberLiteral(_)
                     | Expr::StringLiteral(_)
                     | Expr::BytesLiteral(_)
@@ -225,6 +239,20 @@ impl<'a> Visitor<'a> for NormalizeVisitor {
                 walk_expr(self, expr);
             }
         }
+    }
+
+    fn visit_keyword(&mut self, keyword: &'a Keyword) {
+        // Hash the keyword argument name (not visited by walk_keyword).
+        if let Some(ref arg) = keyword.arg {
+            self.hash_tag(arg.as_str());
+        }
+        walk_keyword(self, keyword);
+    }
+
+    fn visit_comprehension(&mut self, comprehension: &'a Comprehension) {
+        // Hash is_async (not visited by walk_comprehension).
+        comprehension.is_async.hash(&mut self.hasher);
+        walk_comprehension(self, comprehension);
     }
 
     fn visit_expr_context(&mut self, ctx: &'a ExprContext) {
@@ -354,6 +382,43 @@ mod tests {
     fn no_statements_in_range_returns_error() {
         let result = hash_block("x = 1", 5, 10);
         assert!(result.is_err());
+    }
+
+    /// Non-Expr fields (Identifier, bool) that were previously ignored must
+    /// produce different hashes.
+    #[test]
+    fn non_expr_fields_hash_differ() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("obj.read()", "obj.write()", "Attribute .attr"),
+            ("func(a=1)", "func(b=1)", "Keyword .arg"),
+            (
+                "for x in y:\n    pass",
+                "async for x in y:\n    pass",
+                "For is_async",
+            ),
+            (
+                "with ctx():\n    pass",
+                "async with ctx():\n    pass",
+                "With is_async",
+            ),
+            (
+                "try:\n    pass\nexcept E:\n    pass",
+                "try:\n    pass\nexcept* E:\n    pass",
+                "Try is_star",
+            ),
+            (
+                "[x for x in y]",
+                "[x async for x in y]",
+                "Comprehension is_async",
+            ),
+        ];
+        for (a, b, label) in cases {
+            assert_ne!(
+                hash_snippet(a),
+                hash_snippet(b),
+                "{label}: non-Expr field must affect hash"
+            );
+        }
     }
 
     #[test]

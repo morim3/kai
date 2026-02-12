@@ -219,3 +219,94 @@ Rustの堅牢なエコシステム、特にPython解析のデファクトスタ�
   * 内包表記、f-string、lambda、match、FunctionDef、ClassDef を含むブロックで正しくパラメータ化されること。✅
   * Call の keyword 引数の divergence が正しく抽出されること。✅
   * 既存テストが全て通過すること。✅
+
+#### Iter 11: 抽出可能性の検証 (SafetyChecker)
+* **背景:** 現在のツールは、指定ブロックが関数に抽出可能かどうかを検証しない。
+  ブロック内に特定のフロー制御文が含まれると、抽出後にコードが壊れる:
+
+  | フロー文 | 問題 | 壊れる例 |
+  |---------|------|---------|
+  | `break` | 関数内で SyntaxError | `for x in items: break` → `def f(): break` |
+  | `continue` | 関数内で SyntaxError | `while True: continue` → `def f(): continue` |
+  | `return` | 意味が変わる | 呼び出し元関数からの脱出 → 抽出関数からの脱出に |
+  | `yield` / `yield from` | 意味が変わる | ジェネレータの yield が普通の関数に移動 |
+
+  ただし、ブロック内のネストされたスコープ内にあるフロー文は安全:
+  ```python
+  # 安全: break はブロック内の for 自身を対象
+  for x in items:
+      if bad(x):
+          break            # ← depth > 0 なので OK
+
+  # 安全: return はネストした lambda/関数を対象
+  fn = lambda x: x + 1     # ← function_depth > 0 なので OK
+  ```
+
+* **方針:** 新モジュール `src/safety.rs` に `SafetyChecker` を実装し、
+  `plan_extraction_multi()` の冒頭で block 0 に対して検証を実行する。
+  安全でないブロックにはエラーを返す。
+
+* **実装:**
+  1. **`src/safety.rs`**: `SafetyChecker` 構造体 + `check_extractable()` 公開関数。
+     ```rust
+     struct SafetyChecker {
+         loop_depth: usize,      // Stmt::For / Stmt::While に入ると +1
+         function_depth: usize,  // Stmt::FunctionDef / Expr::Lambda に入ると +1
+         unsafe_nodes: Vec<UnsafeNode>,
+     }
+
+     struct UnsafeNode {
+         kind: UnsafeKind,  // Break, Continue, Return, Yield
+         offset: usize,     // ソース上のバイト位置（エラーメッセージ用）
+     }
+
+     /// ブロックの文を走査し、安全でないフロー文を収集する。
+     pub fn check_extractable(stmts: &[Stmt]) -> Result<(), Vec<UnsafeNode>>;
+     ```
+  2. **判定ルール:**
+     - `Stmt::Break` / `Stmt::Continue` → `loop_depth == 0 && function_depth == 0` なら NG
+     - `Stmt::Return` → `function_depth == 0` なら NG
+     - `Expr::Yield` / `Expr::YieldFrom` → `function_depth == 0` なら NG
+  3. **Visitor 実装:**
+     - `visit_stmt`: `For` / `While` で `loop_depth += 1` → body 走査 → `loop_depth -= 1`
+     - `visit_stmt`: `FunctionDef` で `function_depth += 1` → body 走査 → `function_depth -= 1`
+     - `visit_expr`: `Lambda` で `function_depth += 1` → body 走査 → `function_depth -= 1`
+     - `visit_stmt`: `Break` / `Continue` / `Return` で depth 判定 → NG なら `unsafe_nodes` に追加
+     - `visit_expr`: `Yield` / `YieldFrom` で depth 判定 → NG なら追加
+     - 他の Stmt/Expr は `walk_stmt` / `walk_expr` に委譲
+  4. **パイプライン統合 (`lib.rs`):**
+     - `plan_extraction_multi()` の冒頭、scope_ctx 決定前に block 0 の Stmt に対して
+       `check_extractable()` を呼ぶ。Err なら人間可読なエラーメッセージで `bail!`。
+     - エラーメッセージ例: `"Cannot extract: block contains 'break' at line 5 (not inside a loop within the block)"`
+  5. **テスト:**
+     - ユニットテスト (`safety.rs` 内):
+       - `break`/`continue` が直接 → NG
+       - `break` がブロック内の `for` 内 → OK
+       - `return` が直接 → NG
+       - `return` がネスト関数/lambda 内 → OK
+       - `yield` が直接 → NG
+       - `yield` がネスト関数内 → OK
+       - 安全なブロック → OK
+     - 統合フィクスチャ:
+       - `tests/fixtures/error_break_not_extractable/`: `break` を含むブロック → `expected_error.txt`
+       - `tests/fixtures/error_yield_not_extractable/`: `yield` を含むブロック → `expected_error.txt`
+
+* **設計判断:**
+  - block 0 のみ検証で十分: 全ブロックは同一構造なので、block 0 が安全なら全ブロック安全。
+  - エラー時は bail（警告ではなくエラー）: 壊れたコードの生成を防ぐ。
+  - `async for` / `async with` は `loop_depth` / 通常走査で処理（`await` は安全なため対象外）。
+
+* **修正対象ファイル:**
+
+  | ファイル | 変更内容 |
+  |---------|---------|
+  | `src/safety.rs` | 新規: `SafetyChecker` + `check_extractable()` |
+  | `src/lib.rs` | `pub mod safety;` 追加 + `plan_extraction_multi()` に検証呼び出し |
+  | `tests/fixtures/error_break_not_extractable/` | 新規フィクスチャ |
+  | `tests/fixtures/error_yield_not_extractable/` | 新規フィクスチャ |
+
+* **Exit Criteria:**
+  * `break`/`continue` を含むブロックの抽出が明確なエラーメッセージで拒否されること。
+  * `return`/`yield` を含むブロックの抽出が拒否されること。
+  * ネストした for/while/関数/lambda 内のフロー文は安全と判定されること。
+  * 安全なブロックの既存動作が変わらないこと（全既存テスト通過）。
