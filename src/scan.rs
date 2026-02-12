@@ -238,10 +238,11 @@ pub fn find_matches_with_hash(
     let window_size = target_stmts.len();
     let target_hash = hash_stmt_refs(&target_stmts);
 
-    // Scan the innermost body.
-    let mut matches = scan_body_with_hash(source, scope_info.inner_body, target_hash, window_size);
+    // Recursively scan the innermost body and all its child scopes.
+    let mut matches = Vec::new();
+    scan_all_bodies_recursive(source, scope_info.inner_body, target_hash, window_size, &mut matches);
 
-    // Scan sibling scopes at the parent level.
+    // Recursively scan sibling scopes at the parent level.
     if let Some((parent_body, _)) = scope_info.parent {
         for stmt in parent_body {
             let child_body: Option<&[Stmt]> = match stmt {
@@ -252,7 +253,7 @@ pub fn find_matches_with_hash(
             if let Some(child) = child_body
                 && !same_body(child, scope_info.inner_body)
             {
-                matches.extend(scan_body_with_hash(source, child, target_hash, window_size));
+                scan_all_bodies_recursive(source, child, target_hash, window_size, &mut matches);
             }
         }
     }
@@ -565,6 +566,43 @@ class Bar:
             2,
             "Should find matches in function and class"
         );
+    }
+
+    #[test]
+    fn scan_module_into_child_scopes() {
+        // Reference block at module level should find matches inside functions and class methods.
+        let code = "\
+a = 1
+b = a + 2
+x = 10
+y = x + 20
+
+def foo():
+    p = 100
+    q = p + 200
+
+class Bar:
+    def method(self):
+        m = 1000
+        n = m + 2000
+";
+        assert_matches(code, 1, 2, &[(1, 2), (3, 4), (7, 8), (12, 13)]);
+    }
+
+    #[test]
+    fn scan_sibling_into_nested_child() {
+        // Reference inside foo(); sibling class has a matching block in a nested method.
+        let code = "\
+def foo():
+    a = 1
+    b = a + 2
+
+class Bar:
+    def method(self):
+        x = 10
+        y = x + 20
+";
+        assert_matches(code, 2, 3, &[(2, 3), (7, 8)]);
     }
 
     #[test]
