@@ -170,7 +170,7 @@ pub fn plan_extraction_multi(
                 other_block,
                 sources[blocks[0].source_index],
                 sources[blocks[i].source_index],
-            );
+            )?;
             all_divs.push(divs);
         }
     }

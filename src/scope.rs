@@ -392,7 +392,8 @@ mod tests {
 
         let src_a = "c = a + b";
         let src_b = "z = x + y";
-        let divs = crate::diff_extract::extract_divergences(&block_a, &block_b, src_a, src_b);
+        let divs =
+            crate::diff_extract::extract_divergences(&block_a, &block_b, src_a, src_b).unwrap();
 
         let sig = unify_signatures(
             &[
@@ -432,8 +433,10 @@ mod tests {
         let block_c = parse_stmts(src_c);
 
         // Divergences: block_a vs block_b, block_a vs block_c
-        let divs_ab = crate::diff_extract::extract_divergences(&block_a, &block_b, src_a, src_b);
-        let divs_ac = crate::diff_extract::extract_divergences(&block_a, &block_c, src_a, src_c);
+        let divs_ab =
+            crate::diff_extract::extract_divergences(&block_a, &block_b, src_a, src_b).unwrap();
+        let divs_ac =
+            crate::diff_extract::extract_divergences(&block_a, &block_c, src_a, src_c).unwrap();
 
         let sig = unify_signatures(
             &[
