@@ -195,4 +195,60 @@ mod tests {
         assert_eq!(divs[1], Divergence::Literal("10".into(), "20".into()));
         assert_eq!(divs[2], Divergence::Name("result".into(), "output".into()));
     }
+
+    #[test]
+    fn divergence_inside_if_body() {
+        let src_a = "if x > 0:\n    a = 1";
+        let src_b = "if y > 0:\n    b = 2";
+        let a = parse_stmts(src_a);
+        let b = parse_stmts(src_b);
+        let divs = extract_divergences(&a, &b, src_a, src_b);
+        // test: x vs y, body: a=1 vs b=2 (literal 1 vs 2, name a vs b)
+        assert_eq!(divs.len(), 3);
+        assert_eq!(divs[0], Divergence::Name("x".into(), "y".into()));
+        assert_eq!(divs[1], Divergence::Literal("1".into(), "2".into()));
+        assert_eq!(divs[2], Divergence::Name("a".into(), "b".into()));
+    }
+
+    #[test]
+    fn divergence_inside_for_loop() {
+        let src_a = "for i in items:\n    x = i + 1";
+        let src_b = "for j in data:\n    y = j + 2";
+        let a = parse_stmts(src_a);
+        let b = parse_stmts(src_b);
+        let divs = extract_divergences(&a, &b, src_a, src_b);
+        // iter: items vs data, target: i vs j, body: i vs j + 1 vs 2, x vs y
+        assert_eq!(divs.len(), 5);
+        assert_eq!(divs[0], Divergence::Name("items".into(), "data".into()));
+        assert_eq!(divs[1], Divergence::Name("i".into(), "j".into()));
+        assert_eq!(divs[2], Divergence::Name("i".into(), "j".into()));
+        assert_eq!(divs[3], Divergence::Literal("1".into(), "2".into()));
+        assert_eq!(divs[4], Divergence::Name("x".into(), "y".into()));
+    }
+
+    #[test]
+    fn divergence_inside_while_loop() {
+        let src_a = "while a < 10:\n    a += 1";
+        let src_b = "while b < 20:\n    b += 1";
+        let a = parse_stmts(src_a);
+        let b = parse_stmts(src_b);
+        let divs = extract_divergences(&a, &b, src_a, src_b);
+        // test: a vs b, literal: 10 vs 20, body aug_assign: 1 vs 1 (same), a vs b
+        assert_eq!(divs.len(), 3);
+        assert_eq!(divs[0], Divergence::Name("a".into(), "b".into()));
+        assert_eq!(divs[1], Divergence::Literal("10".into(), "20".into()));
+        assert_eq!(divs[2], Divergence::Name("a".into(), "b".into()));
+    }
+
+    #[test]
+    fn divergence_in_return_statement() {
+        let src_a = "return x + 1";
+        let src_b = "return y + 2";
+        let a = parse_stmts(src_a);
+        let b = parse_stmts(src_b);
+        let divs = extract_divergences(&a, &b, src_a, src_b);
+        assert_eq!(divs.len(), 2);
+        assert_eq!(divs[0], Divergence::Name("x".into(), "y".into()));
+        assert_eq!(divs[1], Divergence::Literal("1".into(), "2".into()));
+    }
 }

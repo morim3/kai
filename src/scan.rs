@@ -359,47 +359,40 @@ fn scan_body_with_hash(
 mod tests {
     use super::*;
 
-    #[test]
-    fn finds_target_and_duplicate() {
-        let code = "\
-a = 1
-b = a + 2
-c = 3
-x = 100
-y = x + 200
-";
-        let matches = find_matches(code, 1, 2).unwrap();
-        assert_eq!(matches.len(), 2, "Should find 2 matching blocks");
-        assert_eq!(matches[0].start_line, 1);
-        assert_eq!(matches[0].end_line, 2);
-        assert_eq!(matches[1].start_line, 4);
-        assert_eq!(matches[1].end_line, 5);
+    /// Helper: assert find_matches returns expected count and optional line positions.
+    fn assert_matches(code: &str, start: usize, end: usize, expected: &[(usize, usize)]) {
+        let matches = find_matches(code, start, end).unwrap();
+        assert_eq!(
+            matches.len(),
+            expected.len(),
+            "Expected {} matches, got {}",
+            expected.len(),
+            matches.len()
+        );
+        for (m, &(exp_start, exp_end)) in matches.iter().zip(expected) {
+            assert_eq!(m.start_line, exp_start);
+            assert_eq!(m.end_line, exp_end);
+        }
     }
 
     #[test]
-    fn no_duplicates_returns_only_target() {
-        let code = "\
-a = 1
-b = a + 2
-c = a - 3
-";
-        let matches = find_matches(code, 1, 2).unwrap();
-        assert_eq!(matches.len(), 1, "Should find only the target itself");
-        assert_eq!(matches[0].start_line, 1);
-    }
-
-    #[test]
-    fn three_matching_blocks() {
-        let code = "\
-a = 1
-b = a + 2
-c = 10
-d = c + 20
-e = 100
-f = e + 200
-";
-        let matches = find_matches(code, 1, 2).unwrap();
-        assert_eq!(matches.len(), 3, "Should find 3 matching blocks");
+    fn module_level_matching() {
+        // 2 matching blocks
+        assert_matches(
+            "a = 1\nb = a + 2\nc = 3\nx = 100\ny = x + 200\n",
+            1,
+            2,
+            &[(1, 2), (4, 5)],
+        );
+        // 3 matching blocks
+        assert_matches(
+            "a = 1\nb = a + 2\nc = 10\nd = c + 20\ne = 100\nf = e + 200\n",
+            1,
+            2,
+            &[(1, 2), (3, 4), (5, 6)],
+        );
+        // No duplicates — only target returned
+        assert_matches("a = 1\nb = a + 2\nc = a - 3\n", 1, 2, &[(1, 2)]);
     }
 
     #[test]
@@ -482,42 +475,20 @@ baz(1, 2)
     }
 
     #[test]
-    fn scan_across_sibling_functions() {
-        let code = "\
-def foo():
-    a = 1
-    b = a + 2
-
-def bar():
-    x = 10
-    y = x + 20
-";
-        let matches = find_matches(code, 2, 3).unwrap();
-        assert_eq!(
-            matches.len(),
+    fn scan_across_siblings() {
+        // Sibling functions
+        assert_matches(
+            "def foo():\n    a = 1\n    b = a + 2\n\ndef bar():\n    x = 10\n    y = x + 20\n",
             2,
-            "Should find matches across sibling functions"
+            3,
+            &[(2, 3), (6, 7)],
         );
-        assert_eq!(matches[0].start_line, 2);
-        assert_eq!(matches[1].start_line, 6);
-    }
-
-    #[test]
-    fn scan_across_sibling_classes() {
-        let code = "\
-class Foo:
-    a = 1
-    b = a + 2
-
-class Bar:
-    x = 10
-    y = x + 20
-";
-        let matches = find_matches(code, 2, 3).unwrap();
-        assert_eq!(
-            matches.len(),
+        // Sibling classes
+        assert_matches(
+            "class Foo:\n    a = 1\n    b = a + 2\n\nclass Bar:\n    x = 10\n    y = x + 20\n",
             2,
-            "Should find matches across sibling classes"
+            3,
+            &[(2, 3), (6, 7)],
         );
     }
 

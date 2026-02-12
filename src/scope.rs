@@ -464,4 +464,53 @@ mod tests {
             "a should be an input since RHS loads it first"
         );
     }
+
+    #[test]
+    fn builtins_excluded_from_inputs() {
+        // `print(x)` — `print` is a builtin and should not appear as input.
+        let block = parse_stmts("y = len(x)\nprint(y)");
+        let iface = analyze_block(&block, &[]);
+        assert_eq!(iface.inputs, vec!["x"], "builtins len/print excluded");
+    }
+
+    #[test]
+    fn tuple_unpacking_stores() {
+        // `a, b = func()` — both a and b are stores.
+        let block = parse_stmts("a, b = func()");
+        let after = parse_stmts("print(a, b)");
+        let iface = analyze_block(&block, &after);
+        assert_eq!(iface.inputs, vec!["func"], "func is loaded");
+        assert_eq!(
+            iface.outputs,
+            vec!["a", "b"],
+            "both unpacked vars are outputs"
+        );
+    }
+
+    #[test]
+    fn del_treated_as_store() {
+        // `del x` — ExprContext::Del is treated as Store, so x should not
+        // appear as input (it's "defined" by del). If x was loaded before
+        // being deleted, it's an input.
+        let block = parse_stmts("y = x + 1\ndel x");
+        let iface = analyze_block(&block, &[]);
+        assert_eq!(iface.inputs, vec!["x"], "x loaded before del");
+    }
+
+    #[test]
+    fn for_loop_target_is_store() {
+        // `for i in items:` — i is a store, items is a load.
+        let block = parse_stmts("for i in items:\n    pass");
+        let after = parse_stmts("print(i)");
+        let iface = analyze_block(&block, &after);
+        assert_eq!(iface.inputs, vec!["items"]);
+        assert_eq!(iface.outputs, vec!["i"]);
+    }
+
+    #[test]
+    fn block_stores_returns_all_stores() {
+        let block = parse_stmts("a = 1\nb = a + 2\nc = b * 3");
+        let stores = block_stores(&block);
+        assert_eq!(stores, vec!["a", "b", "c"]);
+    }
 }

@@ -531,4 +531,74 @@ mod tests {
         assert!(has_import(source, "utils", "compute"));
         assert!(!has_import(source, "utils", "other_func"));
     }
+
+    #[test]
+    fn generate_function_def_basic() {
+        use crate::scan::{MatchedBlock, ScopeContext, ScopeKind};
+        use crate::test_utils::parse_stmts;
+
+        let source = "a = 1\nb = a + 2\n";
+        let block = MatchedBlock {
+            start_line: 1,
+            end_line: 2,
+            start_offset: 0,
+            end_offset: source.len() - 1, // exclude trailing newline
+        };
+        let stmts = parse_stmts(source);
+        let positions = collect_node_positions(&stmts);
+        let sig = make_sig(
+            &["arg_0", "arg_1"],
+            &[],
+            &[&["a", "1"], &["x", "10"]],
+            &[&[], &[]],
+        );
+        let scope = ScopeContext {
+            kind: ScopeKind::Module,
+            body_start_offset: 0,
+            indent: String::new(),
+            class_def_offset: None,
+            parent_indent: None,
+        };
+
+        let result = generate_function_def(source, &block, &positions, &sig, "compute", &scope);
+        assert_eq!(
+            result,
+            "def compute(arg_0, arg_1):\n    arg_0 = arg_1\n    b = arg_0 + 2\n"
+        );
+    }
+
+    #[test]
+    fn generate_function_def_with_returns() {
+        use crate::scan::{MatchedBlock, ScopeContext, ScopeKind};
+        use crate::test_utils::parse_stmts;
+
+        let source = "result = x + 1\n";
+        let block = MatchedBlock {
+            start_line: 1,
+            end_line: 1,
+            start_offset: 0,
+            end_offset: source.len() - 1,
+        };
+        let stmts = parse_stmts(source);
+        let positions = collect_node_positions(&stmts);
+        let sig = make_sig(
+            &["arg_0"],
+            &["ret_0"],
+            &[&["x"], &["y"]],
+            &[&["result"], &["output"]],
+        );
+        let scope = ScopeContext {
+            kind: ScopeKind::Module,
+            body_start_offset: 0,
+            indent: String::new(),
+            class_def_offset: None,
+            parent_indent: None,
+        };
+
+        let result = generate_function_def(source, &block, &positions, &sig, "extract", &scope);
+        assert_eq!(
+            result,
+            "def extract(arg_0):\n    ret_0 = arg_0 + 1\n    return ret_0\n"
+        );
+    }
 }
