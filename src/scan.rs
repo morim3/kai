@@ -151,14 +151,6 @@ fn make_scope_context(
     }
 }
 
-/// Check if two body slices are the same (by comparing the start offset of their first statement).
-fn same_body(a: &[Stmt], b: &[Stmt]) -> bool {
-    match (a.first(), b.first()) {
-        (Some(x), Some(y)) => x.range().start() == y.range().start(),
-        _ => a.is_empty() && b.is_empty(),
-    }
-}
-
 /// Find the innermost body containing a given byte offset.
 ///
 /// Used by `lib.rs` to find each matched block's body for `after_block` computation.
@@ -238,25 +230,14 @@ pub fn find_matches_with_hash(
     let window_size = target_stmts.len();
     let target_hash = hash_stmt_refs(&target_stmts);
 
-    // Recursively scan the innermost body and all its child scopes.
+    // Scan the widest relevant scope: parent body (if it exists) or innermost body.
+    // This recursively covers the innermost body, sibling scopes, and parent-level statements.
+    let search_root = match &scope_info.parent {
+        Some((parent_body, _)) => parent_body,
+        None => scope_info.inner_body,
+    };
     let mut matches = Vec::new();
-    scan_all_bodies_recursive(source, scope_info.inner_body, target_hash, window_size, &mut matches);
-
-    // Recursively scan sibling scopes at the parent level.
-    if let Some((parent_body, _)) = scope_info.parent {
-        for stmt in parent_body {
-            let child_body: Option<&[Stmt]> = match stmt {
-                Stmt::FunctionDef(f) => Some(&f.body),
-                Stmt::ClassDef(c) => Some(&c.body),
-                _ => None,
-            };
-            if let Some(child) = child_body
-                && !same_body(child, scope_info.inner_body)
-            {
-                scan_all_bodies_recursive(source, child, target_hash, window_size, &mut matches);
-            }
-        }
-    }
+    scan_all_bodies_recursive(source, search_root, target_hash, window_size, &mut matches);
 
     Ok((target_hash, window_size, matches))
 }
@@ -508,6 +489,20 @@ def bar():
 ";
         let matches = find_matches(code, 2, 3).unwrap();
         assert_eq!(matches.len(), 3, "2 in foo + 1 in bar");
+    }
+
+    #[test]
+    fn scan_child_finds_parent_body_matches() {
+        // Reference inside function, matching block at module level (parent body).
+        let code = "\
+a = 1
+b = a + 2
+
+def foo():
+    x = 10
+    y = x + 20
+";
+        assert_matches(code, 5, 6, &[(1, 2), (5, 6)]);
     }
 
     #[test]
