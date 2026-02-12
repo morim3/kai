@@ -5,29 +5,61 @@ Python Extract Method refactoring tool. Finds structurally identical code blocks
 ## Example
 
 ```python
-# example.py
-a = 1
-b = a + 2
-c = 3
-x = 100
-y = x + 200
+total_price = 0
+for item in cart:
+    total_price += item["price"]
+avg_price = total_price / len(cart)
+
+total_weight = 0
+for item in cart:
+    total_weight += item["weight"]
+avg_weight = total_weight / len(cart)
+
+print(avg_price, avg_weight)
+
+def summarize(entries):
+    total_score = 0
+    for item in entries:
+        total_score += item["score"]
+    avg_score = total_score / len(entries)
+    return avg_score
+
+class Dashboard:
+    def refresh(self, records):
+        total_clicks = 0
+        for item in records:
+            total_clicks += item["clicks"]
+        avg_clicks = total_clicks / len(records)
+        self.display(avg_clicks)
 ```
 
 ```sh
-kai example.py 1 2
+kai analytics.py 1 4
 ```
 
 ```python
-def extracted_func_0(arg_0, arg_1):
-    a = arg_0
-    b = a + arg_1
+def avg_by_key(items, key):
+    total = 0
+    for item in items:
+        total += item[key]
+    avg = total / len(items)
+    return avg
 
-extracted_func_0(1, 2)
-c = 3
-extracted_func_0(100, 200)
+avg_price = avg_by_key(cart, "price")
+avg_weight = avg_by_key(cart, "weight")
+print(avg_price, avg_weight)
+
+def summarize(entries):
+    avg_score = avg_by_key(entries, "score")
+    return avg_score
+
+class Dashboard:
+    def refresh(self, records):
+        avg_clicks = avg_by_key(records, "clicks")
+        self.display(avg_clicks)
 ```
 
-Lines 1-2 and 4-5 are structurally identical. The differing literals become parameters.
+4 blocks across module level, a function, and a class method — all detected and extracted into one shared function. In interactive mode (default), you choose the function name and parameter names.
 
 ## Usage
 
