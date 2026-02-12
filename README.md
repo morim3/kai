@@ -5,6 +5,7 @@ Python Extract Method refactoring tool. Finds structurally identical code blocks
 ## Example
 
 ```python
+# analytics.py
 total_price = 0
 for item in cart:
     total_price += item["price"]
@@ -34,10 +35,12 @@ class Dashboard:
 ```
 
 ```sh
+# command line
 kai analytics.py 1 4
 ```
 
 ```python
+# output
 def avg_by_key(items, key):
     total = 0
     for item in items:
