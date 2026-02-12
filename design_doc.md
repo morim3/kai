@@ -149,7 +149,7 @@ Rustの堅牢なエコシステム、特にPython解析のデファクトスタ�
   * `scan::find_matches()` → `Vec<MatchedBlock>` (Stage 1)
   * `plan_extraction()` → `ExtractionPlan` (Stage 2: owned data, AST borrow 不要)
   * `rewrite::apply_refactoring()` → `String` (Stage 3)
-  * `ExtractionPlan` = `{ sig, scope_ctx, ref_node_positions: Vec<(usize, usize)> }`
+  * `ExtractionPlan` = `{ sig, scope_ctx, ref_node_positions: Vec<NodePosition> }`
   * `collect_node_positions()` で AST ノード位置を事前収集 → ステージ間で owned data として引き回し
 * **対話フロー:**
   1. ブロック選択（MultiSelect: どのマッチを置き換えるか）

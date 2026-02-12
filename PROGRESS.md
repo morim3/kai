@@ -1,73 +1,64 @@
 # PROGRESS.md
 
 ## Current State
-- Phase 1-5 + Iter 1-3.5 完了、Iter 4 実装中
-- 54 unit tests + 7 CLI tests + 28 fixtures = all passing
-- Latest commit: `55228b6`
+- Phase 1-5 + Iter 1-6 完了
+- 88 tests (lib 74 + CLI 7 + integration 1 [33 fixtures])
+- Latest commit: `c51ae4c`
 
 ## Completed
 - Phase 1-5: 基本機能すべて実装済み
 - Phase 6 Iter 1: ビルトイン除外 (`ruff_python_stdlib` 導入) ✅
 - Phase 6 Iter 2: スコープ対応配置 ✅
-  - Function → ネスト関数、Class → クラス外に配置、Module → 先頭
-  - output 判定は全スコープ統一（after_block 依存、Class 特別扱いなし）
 - Phase 6 Iter 3: エッジケーステスト ✅
-  - 9 パターンの fixture 追加
 - Phase 6 Iter 3.5: 兄弟スコープ横断スキャン ✅
-  - `find_scopes` で innermost と parent を1回の探索で取得
-  - `find_body_for_block` で各ブロックの body を個別に取得、per-block after_block 算出
-  - `find_scope_for_matches` でクロススコープ時は親スコープコンテキストを使用
-  - cross_function, cross_function_with_output fixture 追加
-- Phase 6 Iter 4: 対話モード（パイプライン分割） 🔧 進行中
-  - `ExtractionPlan` + `plan_extraction()` でパイプラインを3段階に分割 ✅
-  - `collect_node_positions()` で AST ボロー問題を解消 ✅
-  - `--interactive` (`-i`) CLI フラグ追加 ✅
-  - `dialoguer` による対話フロー（ブロック選択、関数名、リネーム）✅
-  - 残タスク: 入力バリデーション、戻り値追加機能、フロー簡素化
+- Phase 6 Iter 4: 対話モード ✅
+  - パイプライン3段階分割 (`plan_extraction` → `ExtractionPlan` → `apply_refactoring`)
+  - `--interactive` (`-i`) CLI フラグ
+  - 対話フロー: ブロック選択 → 関数名 → パラメータリネーム → 戻り値リネーム → 戻り値追加 → プレビュー
+  - 入力バリデーション（識別子チェック、重複名拒否、生成コード検証）
+- Phase 6 Iter 5: 複数ファイル対応 ✅
+  - `find_matches_with_hash()` / `find_matches_in_file()` で再帰的スキャン
+  - `SourcedBlock` + `plan_extraction_multi()` でクロスファイル計画
+  - `apply_refactoring_multi()` でファイルごとの書き換え + `from <stem> import <func>` 挿入
+  - CLI: `pym A.py B.py C.py START END [--write] [--diff]`
+  - 5つのマルチファイルフィクスチャ
+- Phase 6 Iter 6: 対話モード + マルチファイル統合 ✅
+  - `run_interactive_multi()` + `select_sourced_blocks()` 追加
+  - マルチファイル+対話モードの `bail!` を除去
 
-## Refactoring (Tech Debt Reduction)
-- **スコープ探索統一:** `find_innermost_body_inner` + `find_parent_with_ctx_inner` (4関数 119行)
-  → `find_scopes_inner` (1関数 50行) に統合。1回の探索で innermost/parent 両方を返す。
-- **indent計算統一:** `indent_of_body` (scan.rs) + `indent_at_offset` (rewrite.rs)
-  → `indent_at_offset` を normalize.rs に共通化。
-- **AST ベース識別子置換:** `replace_identifier`（テキストベース単語境界マッチ）
-  → `replace_names_ast`（Visitor で Expr::Name/Literal の TextRange を収集しピンポイント置換）。
-  文字列リテラル・コメント内の誤置換バグを修正。
-- **パイプライン分割 (Iter 4):** `extract_method_with_options` を `plan_extraction` + `apply_refactoring`
-  に分割。AST ボローをステージ間で持ち越す問題を `Vec<(usize, usize)>` で解消。
+## Refactoring History
+- **スコープ探索統一:** `find_scopes_inner` に統合（-69行）
+- **indent計算統一:** `normalize::indent_at_offset` に共通化
+- **AST ベース識別子置換:** `replace_names_ast` でピンポイント置換（文字列・コメント誤置換を修正）
+- **パイプライン分割:** `plan_extraction` + `apply_refactoring` に分割、AST ボロー問題を解消
+- **テスト MECE 改善 (08cc18b):**
+  - scan.rs: 冗長テスト5つ → パラメータ化2つに統合
+  - scope.rs: builtins/tuple unpacking/del/for-loop/block_stores テスト追加
+  - diff_extract.rs: if/for/while/return のネスト body 分岐テスト追加
+  - rewrite.rs: `generate_function_def` ユニットテスト追加
+- **DRY + 型安全性改善 (c51ae4c):**
+  - `apply_block_edits` + `build_call_edits` で重複編集ロジックを共通化
+  - `prompt_block_selection` でブロック選択UIを統合
+  - `NodePosition { offset, len }` 構造体で `(usize, usize)` タプル8箇所を置換
 
 ## Design Decisions
-- **output は全スコープ統一で after_block 依存:**
-  Class スコープも特別扱いしない。対話モードで手動追加可能。
-- **self.x 代入は return 不要:**
-  属性への副作用はミュータブル参照経由で反映される。
-- **モジュールスコープ名の自動除外は行わない:**
-  将来のCLI制御（パラメータ手動選択）に委ねる。
-- **クロススコープ抽出は親スコープに配置:**
-  兄弟関数/クラスにまたがるマッチは共通の親スコープに関数を配置。
-- **識別子置換は AST ノード位置ベース:**
-  テキストマッチではなく、パーサーが識別した Name/Literal ノードの正確なバイト範囲のみ置換。
-- **対話モードのパラメータ/戻り値「選択（除外）」は不要:**
-  パラメータ除外 → ハードコードされるだけで有用なユースケースがない。
-  戻り値除外 → 後続コードが壊れるだけ。
-  代わりに「戻り値の追加」（after_block 解析で検出されなかった変数を手動で返す）が有用。
+- output は全スコープ統一で after_block 依存（Class 特別扱いなし）
+- self.x 代入は return 不要（属性副作用はミュータブル参照経由）
+- クロススコープ抽出は親スコープに配置
+- 識別子置換は AST ノード位置ベース
+- 対話モード: パラメータ/戻り値の「除外」は不要、「追加」のみ
+- クロスファイル抽出は `ScopeKind::Module` に強制
 
-## Next Step
-- **Iter 4 残タスク:**
-  1. 入力バリデーション（不正識別子、重複名の拒否）
-  2. 対話フロー簡素化（パラメータ/戻り値の選択ステップ削除）
-  3. 戻り値追加機能（ブロック内 store 変数から追加選択）
-
-## Iteration Plan
-- Iter 4: 対話モード ← 進行中
-- Iter 5: 複数ファイル対応
+## Next Steps
+- 新機能のアイデアは design_doc.md を参照
+- 候補: LSP 統合、IDE プラグイン、デコレータ/`with` 文対応 等
 
 ## Failed Approaches
-- モジュールスコープ名の自動除外: revert済み。
-- クラスbodyに self 付きメソッドとして配置: class body に self が存在しないため不可。
-- Class スコープで全 store を output: 他スコープと不整合。統一ルールに変更。
-- テキストベース識別子置換 (`replace_identifier`): 文字列・コメント内を誤置換。AST ベースに置換。
-- 対話モードのパラメータ/戻り値「除外」: ユースケースが薄い。リネーム＋戻り値追加に方針変更。
+- モジュールスコープ名の自動除外: revert済み
+- クラスbodyに self 付きメソッドとして配置: class body に self が存在しないため不可
+- Class スコープで全 store を output: 他スコープと不整合。統一ルールに変更
+- テキストベース識別子置換: 文字列・コメント内を誤置換。AST ベースに置換
+- 対話モードのパラメータ/戻り値「除外」: ユースケースが薄い
 
 ## Blockers
 (なし)
