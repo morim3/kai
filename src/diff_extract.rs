@@ -432,7 +432,13 @@ fn diff_interpolated_elements(
 /// Used for both divergence values (call-site arguments) and
 /// `NodePosition::override_text` (rename-map lookup key).
 pub fn quote_fstring_segment(raw: &str) -> String {
-    format!("\"{}\"", raw.replace('\\', "\\\\").replace('"', "\\\""))
+    let escaped = raw
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+    format!("\"{escaped}\"")
 }
 
 /// Diff parameter default values and names across two `Parameters` structs.

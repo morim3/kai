@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 
 use ruff_python_ast::visitor::{Visitor, walk_expr, walk_interpolated_string_element};
-use ruff_python_ast::{Expr, InterpolatedStringElement, Stmt};
+use ruff_python_ast::{Expr, FStringPart, InterpolatedStringElement, Stmt, StringLiteral};
 use ruff_text_size::Ranged;
 use similar::TextDiff;
 
@@ -11,6 +11,19 @@ use crate::diff_extract::quote_fstring_segment;
 use crate::normalize::indent_at_offset;
 use crate::scan::{MatchedBlock, ScopeContext, ScopeKind};
 use crate::scope::FunctionSignature;
+
+/// How the replacement text should be wrapped when substituted into source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReplacementKind {
+    /// Normal substitution — just replace the text.
+    #[default]
+    Normal,
+    /// F-string literal segment — wrap with `{…}` for interpolation.
+    FStringSegment,
+    /// Concatenated f-string part literal (e.g., `" world"` in `f"hello" " world"`).
+    /// Replace with `f"{…}"` to preserve string concatenation semantics.
+    FStringPartLiteral,
+}
 
 /// Byte position of an AST node (Name, literal, or f-string segment) in source text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,8 +35,8 @@ pub struct NodePosition {
     /// For f-string literal segments: the quoted text used as rename_map key
     /// (e.g., `"\"Pending: \""`). `None` for normal Name/literal nodes.
     pub override_text: Option<String>,
-    /// When true, the replacement is wrapped in `{}` to form an f-string interpolation.
-    pub fstring_literal: bool,
+    /// How the replacement should be wrapped.
+    pub kind: ReplacementKind,
 }
 
 /// Generate the extracted function definition as a string.
@@ -411,11 +424,10 @@ fn replace_names_ast(
         };
         if let Some(&new_name) = rename_map.get(lookup_key) {
             let body_offset = pos.offset - block_start + indent_len;
-            // For f-string literal segments, wrap replacement in {} to form interpolation.
-            let replacement = if pos.fstring_literal {
-                format!("{{{new_name}}}")
-            } else {
-                new_name.to_string()
+            let replacement = match pos.kind {
+                ReplacementKind::Normal => new_name.to_string(),
+                ReplacementKind::FStringSegment => format!("{{{new_name}}}"),
+                ReplacementKind::FStringPartLiteral => format!("f\"{{{new_name}}}\""),
             };
             replacements.push((body_offset, pos.len, replacement));
         }
@@ -467,8 +479,14 @@ impl<'a> Visitor<'a> for NodeCollector {
                 offset: start,
                 len,
                 override_text: None,
-                fstring_literal: false,
+                kind: ReplacementKind::Normal,
             });
+        }
+        // Collect FStringPart::Literal positions before walking into the f-string.
+        // These are StringLiteral nodes in concatenated f-strings (e.g., `" world"`
+        // in `f"hello" " world" f" {x}"`), distinct from InterpolatedStringElement::Literal.
+        if let Expr::FString(fstring) = expr {
+            self.collect_fstring_part_literals(&fstring.value);
         }
         walk_expr(self, expr);
     }
@@ -482,10 +500,37 @@ impl<'a> Visitor<'a> for NodeCollector {
                 offset: start,
                 len,
                 override_text: Some(quote_fstring_segment(&lit.value)),
-                fstring_literal: true,
+                kind: ReplacementKind::FStringSegment,
             });
         }
         walk_interpolated_string_element(self, element);
+    }
+}
+
+impl NodeCollector {
+    /// Collect positions of `FStringPart::Literal` nodes in an f-string value.
+    ///
+    /// These are plain `StringLiteral` nodes in concatenated f-strings
+    /// (e.g., `" world"` in `f"hello" " world" f" {x}"`).
+    /// The replacement wraps with `f"{…}"` to preserve concatenation semantics.
+    fn collect_fstring_part_literals(&mut self, value: &ruff_python_ast::FStringValue) {
+        for part in value.iter() {
+            if let FStringPart::Literal(string_lit) = part {
+                self.push_string_literal_position(string_lit);
+            }
+        }
+    }
+
+    fn push_string_literal_position(&mut self, string_lit: &StringLiteral) {
+        let range = string_lit.range();
+        let start = range.start().to_usize();
+        let len = range.end().to_usize() - start;
+        self.positions.push(NodePosition {
+            offset: start,
+            len,
+            override_text: Some(quote_fstring_segment(&string_lit.value)),
+            kind: ReplacementKind::FStringPartLiteral,
+        });
     }
 }
 
