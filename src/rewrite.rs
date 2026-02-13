@@ -405,11 +405,25 @@ fn replace_names_ast(
         }
     }
 
+    // Filter out replacements that are strictly contained within a larger one.
+    // This handles the case where an FString is a whole-expression divergence:
+    // inner Name positions must be skipped to avoid conflicting replacements.
+    let filtered: Vec<_> = replacements
+        .iter()
+        .filter(|&&(off, len, _)| {
+            !replacements
+                .iter()
+                .any(|&(off2, len2, _)| len2 > len && off2 <= off && off + len <= off2 + len2)
+        })
+        .copied()
+        .collect();
+
     // Sort descending by offset so replacements don't invalidate each other.
-    replacements.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut filtered = filtered;
+    filtered.sort_by(|a, b| b.0.cmp(&a.0));
 
     let mut result = body_text.to_string();
-    for (offset, len, new_name) in &replacements {
+    for (offset, len, new_name) in &filtered {
         result.replace_range(*offset..*offset + *len, new_name);
     }
     result
@@ -442,6 +456,8 @@ impl<'a> Visitor<'a> for NodeCollector {
                 | Expr::StringLiteral(_)
                 | Expr::BytesLiteral(_)
                 | Expr::BooleanLiteral(_)
+                | Expr::FString(_)
+                | Expr::TString(_)
         );
         if collect {
             let range = expr.range();
