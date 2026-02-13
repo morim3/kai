@@ -49,6 +49,28 @@ pub fn analyze_block(
     after_block: &[Stmt],
     all_stores_as_outputs: bool,
 ) -> BlockInterface {
+    analyze_block_impl(block, after_block.iter(), all_stores_as_outputs)
+}
+
+/// Analyze a block with after-block statements provided as references.
+///
+/// This variant accepts `&[&Stmt]` instead of `&[Stmt]`, which is needed when
+/// after-block statements are collected from multiple nesting levels (e.g.,
+/// statements after control flow structures up to the scope boundary).
+pub fn analyze_block_refs(
+    block: &[Stmt],
+    after_block: &[&Stmt],
+    all_stores_as_outputs: bool,
+) -> BlockInterface {
+    analyze_block_impl(block, after_block.iter().copied(), all_stores_as_outputs)
+}
+
+/// Shared implementation for `analyze_block` and `analyze_block_refs`.
+fn analyze_block_impl<'a>(
+    block: &[Stmt],
+    after_stmts: impl Iterator<Item = &'a Stmt>,
+    all_stores_as_outputs: bool,
+) -> BlockInterface {
     let mut collector = VarCollector::new();
     for stmt in block {
         collector.visit_stmt(stmt);
@@ -63,42 +85,7 @@ pub fn analyze_block(
     } else {
         // Determine which variables stored in the block are used after it.
         let mut after_collector = VarCollector::new();
-        for stmt in after_block {
-            after_collector.visit_stmt(stmt);
-        }
-        let after_inputs = after_collector.inputs();
-        collector
-            .stores()
-            .into_iter()
-            .filter(|name| after_inputs.contains(name))
-            .collect()
-    };
-
-    BlockInterface { inputs, outputs }
-}
-
-/// Analyze a block with after-block statements provided as references.
-///
-/// This variant accepts `&[&Stmt]` instead of `&[Stmt]`, which is needed when
-/// after-block statements are collected from multiple nesting levels (e.g.,
-/// statements after control flow structures up to the scope boundary).
-pub fn analyze_block_refs(
-    block: &[Stmt],
-    after_block: &[&Stmt],
-    all_stores_as_outputs: bool,
-) -> BlockInterface {
-    let mut collector = VarCollector::new();
-    for stmt in block {
-        collector.visit_stmt(stmt);
-    }
-
-    let inputs = collector.inputs();
-
-    let outputs = if all_stores_as_outputs {
-        collector.stores()
-    } else {
-        let mut after_collector = VarCollector::new();
-        for stmt in after_block {
+        for stmt in after_stmts {
             after_collector.visit_stmt(stmt);
         }
         let after_inputs = after_collector.inputs();

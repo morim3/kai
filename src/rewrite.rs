@@ -472,6 +472,13 @@ pub fn collect_node_positions(stmts: &[Stmt]) -> Vec<NodePosition> {
     collector.positions
 }
 
+/// Extract `(start_offset, length)` from a `Ranged` node.
+fn range_offsets(node: &impl Ranged) -> (usize, usize) {
+    let range = node.range();
+    let start = range.start().to_usize();
+    (start, range.end().to_usize() - start)
+}
+
 /// Collects byte positions of all `Expr::Name` and literal nodes in an AST subtree.
 struct NodeCollector {
     positions: Vec<NodePosition>,
@@ -489,9 +496,7 @@ impl<'a> Visitor<'a> for NodeCollector {
                     | Expr::BooleanLiteral(_)
             );
         if collect {
-            let range = expr.range();
-            let start = range.start().to_usize();
-            let len = range.end().to_usize() - start;
+            let (start, len) = range_offsets(expr);
             self.positions.push(NodePosition {
                 offset: start,
                 len,
@@ -511,9 +516,7 @@ impl<'a> Visitor<'a> for NodeCollector {
 
     fn visit_interpolated_string_element(&mut self, element: &'a InterpolatedStringElement) {
         if let InterpolatedStringElement::Literal(lit) = element {
-            let range = lit.range();
-            let start = range.start().to_usize();
-            let len = range.end().to_usize() - start;
+            let (start, len) = range_offsets(lit);
             self.positions.push(NodePosition {
                 offset: start,
                 len,
@@ -541,9 +544,7 @@ impl NodeCollector {
     }
 
     fn push_string_literal_position(&mut self, string_lit: &StringLiteral) {
-        let range = string_lit.range();
-        let start = range.start().to_usize();
-        let len = range.end().to_usize() - start;
+        let (start, len) = range_offsets(string_lit);
         self.positions.push(NodePosition {
             offset: start,
             len,

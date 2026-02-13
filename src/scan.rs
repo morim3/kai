@@ -75,20 +75,9 @@ fn find_scopes_inner<'a>(
 
         if stmt_start <= target_start && stmt_end >= target_end {
             // Check for scope-creating children (FunctionDef, ClassDef).
-            let child = match stmt {
-                Stmt::FunctionDef(f) => Some((f.body.as_slice(), ScopeKind::Function, None, None)),
-                Stmt::ClassDef(c) => Some((
-                    c.body.as_slice(),
-                    ScopeKind::Class,
-                    Some(range.start().to_usize()),
-                    scope_body
-                        .first()
-                        .map(|s| indent_at_offset(source, s.range().start().to_usize())),
-                )),
-                _ => None,
-            };
-
-            if let Some((child_body, child_kind, child_class_offset, child_parent_indent)) = child {
+            if let Some((child_body, child_kind, child_class_offset, child_parent_indent)) =
+                child_scope_info(stmt, source, scope_body)
+            {
                 return find_scopes_inner(
                     child_body,
                     source,
@@ -132,6 +121,30 @@ fn find_scopes_inner<'a>(
         inner_body: body,
         scope_body,
         inner_ctx: ctx,
+    }
+}
+
+/// Info about a child scope: `(body, kind, class_def_offset, parent_indent)`.
+type ChildScopeInfo<'a> = (&'a [Stmt], ScopeKind, Option<usize>, Option<String>);
+
+/// Extract child scope info from a scope-creating statement (FunctionDef/ClassDef).
+///
+/// Returns scope info if the statement creates a new Python scope, or `None` otherwise.
+fn child_scope_info<'a>(
+    stmt: &'a Stmt,
+    source: &str,
+    enclosing_body: &[Stmt],
+) -> Option<ChildScopeInfo<'a>> {
+    match stmt {
+        Stmt::FunctionDef(f) => Some((f.body.as_slice(), ScopeKind::Function, None, None)),
+        Stmt::ClassDef(c) => {
+            let offset = stmt.range().start().to_usize();
+            let parent_indent = enclosing_body
+                .first()
+                .map(|s| indent_at_offset(source, s.range().start().to_usize()));
+            Some((c.body.as_slice(), ScopeKind::Class, Some(offset), parent_indent))
+        }
+        _ => None,
     }
 }
 
@@ -327,21 +340,12 @@ fn find_common_scope(
     parent_indent: Option<String>,
 ) -> ScopeContext {
     for stmt in body {
-        let range = stmt.range();
         // Only consider scope-creating statements (FunctionDef, ClassDef).
         // Control flow (for/if/while/with/try) does not create Python scopes.
-        let child = match stmt {
-            Stmt::FunctionDef(f) => Some((f.body.as_slice(), ScopeKind::Function, None, None)),
-            Stmt::ClassDef(c) => Some((
-                c.body.as_slice(),
-                ScopeKind::Class,
-                Some(range.start().to_usize()),
-                body.first()
-                    .map(|s| indent_at_offset(source, s.range().start().to_usize())),
-            )),
-            _ => None,
-        };
-        if let Some((child_body, child_kind, child_class_offset, child_parent_indent)) = child {
+        if let Some((child_body, child_kind, child_class_offset, child_parent_indent)) =
+            child_scope_info(stmt, source, body)
+        {
+            let range = stmt.range();
             let stmt_start = range.start().to_usize();
             let stmt_end = range.end().to_usize();
             if matches

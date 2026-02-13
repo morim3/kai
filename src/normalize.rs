@@ -1,6 +1,5 @@
 use std::hash::{Hash, Hasher};
 
-use anyhow::{Result, bail};
 use ruff_python_ast::visitor::{
     Visitor, walk_comprehension, walk_expr, walk_keyword, walk_pattern, walk_stmt,
 };
@@ -29,22 +28,6 @@ pub fn hash_stmt_refs(stmts: &[&Stmt], source: &str) -> u64 {
     hash_stmt_iter(stmts.iter().copied(), source)
 }
 
-/// Extract the statements covering `start_line..=end_line` (1-based) from source.
-/// Returns a hash of the structurally-normalized AST for those statements.
-pub fn hash_block(source: &str, start_line: usize, end_line: usize) -> Result<u64> {
-    if start_line == 0 || end_line == 0 || start_line > end_line {
-        bail!("Invalid line range: {start_line}..={end_line}");
-    }
-
-    let parsed = crate::parse_python(source)?;
-
-    let stmts = select_stmts(source, &parsed.syntax().body, start_line, end_line);
-    if stmts.is_empty() {
-        bail!("No statements found in range {start_line}..={end_line}");
-    }
-
-    Ok(hash_stmt_refs(&stmts, source))
-}
 
 /// Select statements whose line range overlaps with the given 1-based line range.
 pub fn select_stmts<'a>(
@@ -133,6 +116,12 @@ impl<'s> NormalizeVisitor<'s> {
 
     fn hash_usize(&mut self, val: usize) {
         val.hash(&mut self.hasher);
+    }
+
+    /// Hash the source text of an AST node by its range.
+    fn hash_source_range(&mut self, node: &impl Ranged) {
+        let r = node.range();
+        self.hash_tag(&self.source[r.start().to_usize()..r.end().to_usize()]);
     }
 }
 
@@ -271,15 +260,13 @@ impl<'a> Visitor<'a> for NormalizeVisitor<'_> {
             // a capture pattern with completely different match semantics.
             Pattern::MatchValue(mv) => {
                 self.hash_tag("MatchValue");
-                let r = mv.value.range();
-                self.hash_tag(&self.source[r.start().to_usize()..r.end().to_usize()]);
+                self.hash_source_range(&*mv.value);
             }
             // MatchMapping keys: same issue — keys must be literals or dotted names.
             Pattern::MatchMapping(mm) => {
                 self.hash_tag("MatchMapping");
                 for key in &mm.keys {
-                    let r = key.range();
-                    self.hash_tag(&self.source[r.start().to_usize()..r.end().to_usize()]);
+                    self.hash_source_range(key);
                 }
                 // Walk the rest (value patterns, rest name) normally.
                 for pat in &mm.patterns {
@@ -354,6 +341,24 @@ impl<'a> Visitor<'a> for NormalizeVisitor<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::{Result, bail};
+
+    /// Extract the statements covering `start_line..=end_line` (1-based) from source.
+    /// Returns a hash of the structurally-normalized AST for those statements.
+    fn hash_block(source: &str, start_line: usize, end_line: usize) -> Result<u64> {
+        if start_line == 0 || end_line == 0 || start_line > end_line {
+            bail!("Invalid line range: {start_line}..={end_line}");
+        }
+
+        let parsed = crate::parse_python(source)?;
+
+        let stmts = select_stmts(source, &parsed.syntax().body, start_line, end_line);
+        if stmts.is_empty() {
+            bail!("No statements found in range {start_line}..={end_line}");
+        }
+
+        Ok(hash_stmt_refs(&stmts, source))
+    }
 
     /// Helper: hash a full single-line or multi-line Python snippet (lines 1..=N).
     fn hash_snippet(code: &str) -> u64 {
