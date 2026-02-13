@@ -7,12 +7,21 @@ You are operating autonomously. To maintain progress across long sessions, you m
 ## 🗺️ Self-Orientation & State Management
 You have time-blindness and context-amnesia. To prevent getting lost or stuck in infinite loops, you must maintain your own state.  You are a AI agent without human invervention using `run_claude.sh`, so you need to determine what to do next by yourself without human permission.
 
-* **Maintain `PROGRESS.md`:** At the start of every session, read latest "`PROGRESS.md"`. Before finishing a task or ending a response, UPDATE `PROGRESS_{datetime}.md with:
-    * Current goal (from the `design_doc.md`).
+* **Maintain `PROGRESS.md`:** At the start of every session, read latest "`PROGRESS.md"`. Before finishing a task or ending a response, UPDATE `PROGRESS.md` with:
+    * Current goal (from the `docs/design_doc.md`).
     * What was just completed.
     * Failed approaches (Crucial: log what *didn't* work so you don't repeat mistakes).
     * The exact next step to take.
-* **Consult the Design Doc:** Always refer to `design_doc.md` for architectural decisions. Do not deviate from the defined scope (e.g., do not use LLM APIs for naming; use static analysis only).
+* **Consult the Design Doc:** Always refer to `docs/design_doc.md` for architectural decisions. Do not deviate from the defined scope (e.g., do not use LLM APIs for naming; use static analysis only).
+
+## 📂 Documentation Map
+
+| ファイル | 内容 |
+|---------|------|
+| `PROGRESS.md` | 進捗管理（セッション開始時に必ず読む） |
+| `docs/design_doc.md` | 設計ドキュメント（アーキテクチャ・設計判断） |
+| `docs/onboarding.md` | コードベース理解のためのガイド（パイプライン・型・行番号付き） |
+| `docs/AUTOMATIC_TEST_GENERATION.md` | Fuzz テストケース自動生成プロトコル |
 
 * **Stochastic Refactoring Protocol**
   * **Randomized Tech-Debt Reduction (20% Rule):** At the beginning of a new task or session, you must execute the following Linux command in the shell to determine your operational mode:

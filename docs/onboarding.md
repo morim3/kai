@@ -73,8 +73,8 @@ extracted_func_0(100, 200)
 ```
 
 全体の流れは `lib.rs` の2つの関数で読める:
-- **ワンショット**: `extract_method_with_options()` (`lib.rs:261`) — scan → plan → apply を一気に実行
-- **段階分割**: `plan_extraction_multi()` (`lib.rs:132`) → `rewrite::apply_refactoring()` (`rewrite.rs:147`)
+- **ワンショット**: `extract_method_with_options()` (`lib.rs:299`) — scan → plan → apply を一気に実行
+- **段階分割**: `plan_extraction_multi()` (`lib.rs:137`) → `rewrite::apply_refactoring()` (`rewrite.rs:171`)
 
 ---
 
@@ -100,11 +100,11 @@ a = 1 - 2       # BinOp(CONST, Sub, CONST)  → ハッシュ B (違う!)
 ```
 
 **実装箇所:**
-- `NormalizeVisitor` (`normalize.rs:83`) — AST を走査してハッシュを蓄積する Visitor
-- `visit_expr()` (`normalize.rs:165`) — 式ノードの処理。`Expr::Name` は位置 ID に、リテラルは `CONSTANT` に正規化。それ以外は種類タグ + `walk_expr` で再帰
-- `visit_stmt()` (`normalize.rs:132`) — 文ノードの処理。種類タグをハッシュして `walk_stmt` で再帰
-- `visit_operator()` / `visit_cmp_op()` 等 (`normalize.rs:243-283`) — 演算子をハッシュ
-- `hash_block()` (`normalize.rs:30`) — 外部向け API: ソース + 行範囲 → ハッシュ値
+- `NormalizeVisitor` (`normalize.rs:88`) — AST を走査してハッシュを蓄積する Visitor
+- `visit_expr()` (`normalize.rs:180`) — 式ノードの処理。`Expr::Name` は位置 ID に、リテラルは `CONSTANT` に正規化。それ以外は種類タグ + `walk_expr` で再帰
+- `visit_stmt()` (`normalize.rs:140`) — 文ノードの処理。種類タグをハッシュして `walk_stmt` で再帰
+- `visit_operator()` / `visit_cmp_op()` 等 — 演算子をハッシュ
+- `hash_block()` (`normalize.rs:34`) — 外部向け API: ソース + 行範囲 → ハッシュ値
 
 ### ruff Visitor が提供するもの vs 手動で追加が必要なもの
 
@@ -152,7 +152,7 @@ ruff の `Visitor` トレイトは **AST のツリーノード型** に対する
 ファイル全体をスライドしながら同じハッシュのブロックを探す。
 
 **ウィンドウの単位は「AST の Stmt ノード数」** であり、行数ではない。
-`select_stmts()` (`normalize.rs:46`) が行範囲にかかる Stmt を選び、その個数が `window_size` になる。
+`select_stmts()` (`normalize.rs:50`) が行範囲にかかる Stmt を選び、その個数が `window_size` になる。
 複数行にまたがる `if` や `for` も1つの Stmt として数える。
 
 ```python
@@ -183,23 +183,8 @@ body = [Stmt1, Stmt2, Stmt3]
 スライディングウィンドウは1つの `&[Stmt]` (body) に対して動作する。
 ファイル全体を探索するには、各スコープの body に対して再帰的にスキャンする必要がある。
 
-現在の実装は **`FunctionDef` と `ClassDef` の body のみ** に再帰する:
-
-```rust
-// scan.rs — scan_all_bodies_recursive()
-fn scan_all_bodies_recursive(source, body, target_hash, window_size, matches) {
-    scan_body_with_hash(source, body, ...);  // この body 自体をスキャン
-    for stmt in body {
-        match stmt {
-            Stmt::FunctionDef(f) => scan_all_bodies_recursive(..., &f.body, ...),
-            Stmt::ClassDef(c)    => scan_all_bodies_recursive(..., &c.body, ...),
-            _ => {}  // 現状はif, for, while, with, try の内部には入らない. 将来的には拡張が必要
-        }
-    }
-}
-```
-
-**制御フロー文の内部にも再帰する（Iter 8 で実装済み）。**
+`scan_all_bodies_recursive` はスコープ定義文（`FunctionDef`, `ClassDef`）に加え、
+全制御フロー文の body にも再帰する:
 
 | Stmt | 内部の body | 状態 |
 |------|-----------|:---:|
@@ -212,25 +197,8 @@ fn scan_all_bodies_recursive(source, body, target_hash, window_size, matches) {
 | `Try` | `.body`, `.handlers[*].body`, `.orelse`, `.finalbody` | 実装済 |
 | `Match` | `.cases[*].body` | 実装済 |
 
-実装例:
-```rust
-Stmt::If(if_stmt) => {
-    scan_all_bodies_recursive(..., &if_stmt.body, ...);
-    for clause in &if_stmt.elif_else_clauses {
-        scan_all_bodies_recursive(..., &clause.body, ...);
-    }
-}
-Stmt::For(for_stmt) => {
-    scan_all_bodies_recursive(..., &for_stmt.body, ...);
-    if !for_stmt.orelse.is_empty() {
-        scan_all_bodies_recursive(..., &for_stmt.orelse, ...);
-    }
-}
-// While, With, Try, Match も同様
-```
-
-ただし、制御フロー内のブロックを抽出するには **抽出可能性の検証** が別途必要になる
-（後述「制約と未実装機能」を参照）。
+制御フロー内のブロックを抽出する際には `SafetyChecker` (`safety.rs`) により
+`break`/`continue`/`return`/`yield` の安全性が自動検証される。
 
 ### スコープ検出 (`scan.rs`)
 
@@ -238,8 +206,8 @@ Stmt::For(for_stmt) => {
 抽出した関数の配置先を決定する。
 
 **実装箇所:**
-- `ScopeKind` / `ScopeContext` (`scan.rs:10-29`) — スコープの種類と配置情報
-- `find_scopes()` (`scan.rs:41`) — AST を再帰走査して最内スコープ + 親スコープを返す
+- `ScopeKind` / `ScopeContext` (`scan.rs:11-29`) — スコープの種類と配置情報
+- `find_scopes()` (`scan.rs`) — AST を再帰走査して最内スコープ + 親スコープを返す
 - `find_scope_for_matches()` (`scan.rs`) — 全マッチが同一 body なら最内スコープ、異なれば親スコープを返す
 
 ---
@@ -264,12 +232,12 @@ print(result)        # ← ブロック後で result を使用
 ```
 
 **実装箇所:**
-- `VarCollector` (`scope.rs:229`) — AST を走査して (変数名, Load/Store) イベントを記録
-  - `visit_expr()` (`scope.rs:282`) — `Expr::Name` を検出して Load/Store を記録。それ以外は `walk_expr` で再帰
-  - `visit_stmt()` (`scope.rs:295`) — `Assign` は RHS → LHS の順に走査（`a = a + 1` で Load を先に記録するため）。`AugAssign` は Load + Store の両方を記録
-- `analyze_block()` (`scope.rs:44`) — ブロックと after_block を走査して `BlockInterface { inputs, outputs }` を返す
-- `inputs()` (`scope.rs:246`) — Store より先に Load された変数（ビルトイン除外）
-- `stores()` (`scope.rs:269`) — ブロック内で Store された全変数
+- `VarCollector` (`scope.rs:277`) — AST を走査して (変数名, Load/Store) イベントを記録
+  - `visit_expr()` (`scope.rs:365`) — `Expr::Name` を検出して Load/Store を記録。それ以外は `walk_expr` で再帰
+  - `visit_stmt()` (`scope.rs:450`) — `Assign` は RHS → LHS の順に走査（`a = a + 1` で Load を先に記録するため）。`AugAssign` は Load + Store の両方を記録
+- `analyze_block()` (`scope.rs:47`) — ブロックと after_block を走査して `BlockInterface { inputs, outputs }` を返す
+- `inputs()` (`scope.rs:294`) — Store より先に Load された変数（ビルトイン除外）
+- `stores()` (`scope.rs:317`) — ブロック内で Store された全変数
 
 ### 2b. 差分抽出 (`diff_extract.rs`)
 
@@ -282,8 +250,8 @@ b = a + 2                 d = c + 20     # Name: b vs d, a vs c, Literal: 2 vs 2
 ```
 
 **実装箇所:**
-- `extract_divergences()` (`diff_extract.rs:27`) — 2つのブロックの文を zip して `diff_stmts` を呼ぶ
-- `diff_stmts()` (`diff_extract.rs:40`) — 文の種類ごとに分岐。各フィールドの子 Expr を `diff_exprs` で再帰比較
+- `extract_divergences()` (`diff_extract.rs:27`) — 2つのブロックの文を zip して `diff_stmts` を呼ぶ。`(Vec<Divergence>, Vec<usize>)` を返す（2番目は divergent literal のバイトオフセット）
+- `diff_stmts()` (`diff_extract.rs`) — 文の種類ごとに分岐。各フィールドの子 Expr を `diff_exprs` で再帰比較
 - `diff_exprs()` (`diff_extract.rs`) — 式の種類ごとに分岐:
   - `Expr::Name`: 名前が違えば `Divergence::Name` を記録
   - リテラル: ソーステキストが違えば `Divergence::Literal` を記録
@@ -301,12 +269,12 @@ def extracted_func_0(arg_0, arg_1):  # arg_0 = a/c (Name入力), arg_1 = 1/10 (L
 ```
 
 **実装箇所:**
-- `unify_signatures()` (`scope.rs:161`) — 全ブロックの BlockInterface + Divergence から `FunctionSignature` を構築
-- `collect_literal_params()` (`scope.rs:119`) — Literal divergence をブロック横断の値テーブルに変換
-- `FunctionSignature` (`scope.rs:82`) — パラメータ名、戻り値名、ブロックごとの引数マッピング
-- `rename_map()` (`scope.rs:98`) — ブロック0 の元の変数名 → 新しいパラメータ/戻り値名のマッピング
+- `unify_signatures()` (`scope.rs:208`) — 全ブロックの BlockInterface + Divergence から `FunctionSignature` を構築
+- `collect_literal_params()` (`scope.rs:166`) — Literal divergence をブロック横断の値テーブルに変換
+- `FunctionSignature` (`scope.rs:129`) — パラメータ名、戻り値名、ブロックごとの引数マッピング
+- `rename_map()` (`scope.rs:145`) — ブロック0 の元の変数名 → 新しいパラメータ/戻り値名のマッピング
 
-### 計画の出力: `ExtractionPlan` (`lib.rs:67`)
+### 計画の出力: `ExtractionPlan` (`lib.rs:69`)
 
 ```rust
 struct ExtractionPlan {
@@ -314,6 +282,7 @@ struct ExtractionPlan {
     scope_ctx: ScopeContext,             // 配置先スコープ情報
     ref_node_positions: Vec<NodePosition>, // ブロック0のAST名前/リテラル位置
     block_stores: Vec<Vec<String>>,      // ブロックごとの全Store変数
+    divergent_literal_offsets: Vec<usize>, // ブロック0の divergent リテラルのバイト位置
 }
 ```
 
@@ -326,17 +295,17 @@ AST ノードのバイト位置を保存しておくことで、Stage 3 で変�
 
 ### 関数定義の生成
 
-`generate_function_def()` (`rewrite.rs:28`) がブロック0のソーステキストから関数定義を生成する。
+`generate_function_def()` (`rewrite.rs:50`) がブロック0のソーステキストから関数定義を生成する。
 
-1. ブロック0のソーステキストを抽出 (`:36`)
-2. `rename_map()` で元の変数名→パラメータ名の対応を取得 (`:47`)
-3. `replace_names_ast()` で AST ノード位置ベースの置換 (`:51`) — 文字列リテラルやコメント内の同名文字列を壊さない
-4. `reindent()` でインデントを調整 (`:71`)
-5. `def` 行 + body + `return` 文を組み立て (`:74-80`)
+1. ブロック0のソーステキストを抽出
+2. `rename_map()` で元の変数名→パラメータ名の対応を取得
+3. `replace_names_ast()` で AST ノード位置ベースの置換 — 文字列リテラルやコメント内の同名文字列を壊さない。`divergent_literal_offsets` を参照し、非 divergent リテラルは置換しない
+4. `reindent()` でインデントを調整
+5. `def` 行 + body + `return` 文を組み立て
 
 ### ブロック→呼び出し置換
 
-`generate_call()` (`rewrite.rs:88`) が各ブロックの引数を組み立てる。
+`generate_call()` (`rewrite.rs:112`) が各ブロックの引数を組み立てる。
 `block_arg_maps[block_index]` からブロック固有の値を取り出す。
 
 ```python
@@ -346,22 +315,22 @@ AST ノードのバイト位置を保存しておくことで、Stage 3 で変�
 
 ### 編集の適用
 
-`apply_block_edits()` (`rewrite.rs:111`) が全ブロックを関数呼び出しに置換する。
+`apply_block_edits()` (`rewrite.rs:135`) が全ブロックを関数呼び出しに置換する。
 **末尾から先頭の順** に処理することで、先の編集が後の編集のオフセットを壊さない。
 
-`apply_refactoring()` (`rewrite.rs:147`) がこれを統合:
+`apply_refactoring()` (`rewrite.rs:171`) がこれを統合:
 1. 関数定義を生成
 2. 全ブロックを呼び出しに置換（末尾から）
 3. 関数定義をスコープに応じた位置に挿入
 
-### 配置ルール (`rewrite.rs:173-203`)
+### 配置ルール
 
-| ブロックの場所 | 関数の配置先 | 実装 |
-|--------------|------------|------|
-| モジュール直下 | ファイル先頭に prepend | `:174-177` |
-| 関数内 | `body_start_offset` 直前に挿入 | `:178-189` |
-| クラス内 | `class_def_offset` 直前に挿入 | `:191-202` |
-| 複数ファイル | モジュール直下 + `from X import func` | `apply_refactoring_multi()` :263 |
+| ブロックの場所 | 関数の配置先 |
+|--------------|------------|
+| モジュール直下 | ファイル先頭に prepend |
+| 関数内 | `body_start_offset` 直前に挿入 |
+| クラス内 | `class_def_offset` 直前に挿入 |
+| 複数ファイル | モジュール直下 + `from X import func` (`apply_refactoring_multi()` :292) |
 
 ---
 
@@ -371,18 +340,18 @@ AST ノードのバイト位置を保存しておくことで、Stage 3 で変�
 src/
 ├── main.rs           # CLI (clap)。引数パース → scan_all_sources → plan → apply
 ├── lib.rs            # パイプラインオーケストレーション
-│   ├── parse_python()           :54  # ruff パーサーのラッパー
-│   ├── scan_all_sources()       :93  # Stage 0: 全ファイルスキャン
-│   ├── plan_extraction_multi()  :132 # Stage 1+2: 計画
-│   ├── plan_extraction()        :237 # ↑の単一ファイル版ラッパー
-│   └── extract_method()         :256 # ワンショット API
+│   ├── parse_python()           :55  # ruff パーサーのラッパー
+│   ├── scan_all_sources()       :98  # Stage 0: 全ファイルスキャン
+│   ├── plan_extraction_multi()  :137 # Stage 1+2: 計画
+│   ├── plan_extraction()        :275 # ↑の単一ファイル版ラッパー
+│   └── extract_method()         :294 # ワンショット API
 │
 ├── normalize.rs      # AST 正規化 + 構造的ハッシュ
-│   ├── NormalizeVisitor         :83  # ハッシュ蓄積ビジター
-│   ├── hash_block()             :30  # ソース+行範囲→ハッシュ
-│   ├── select_stmts()           :46  # 行範囲で文をフィルタ
-│   ├── line_of_offset()         :63  # バイトオフセット→行番号
-│   └── indent_at_offset()       :73  # オフセット位置のインデント取得
+│   ├── NormalizeVisitor         :88  # ハッシュ蓄積ビジター
+│   ├── hash_block()             :34  # ソース+行範囲→ハッシュ
+│   ├── select_stmts()           :50  # 行範囲で文をフィルタ
+│   ├── line_of_offset()         :68  # バイトオフセット→行番号
+│   └── indent_at_offset()       :78  # オフセット位置のインデント取得
 │
 ├── scan.rs           # スライディングウィンドウ + スコープ検出
 │   ├── ScopeKind / ScopeContext :10  # スコープ情報
@@ -393,10 +362,10 @@ src/
 │   └── find_scope_for_matches() :    # マッチ群から配置スコープ決定
 │
 ├── scope.rs          # 変数スコープ分析
-│   ├── VarCollector             :229 # Load/Store イベント収集
-│   ├── analyze_block()          :44  # 入力+出力を特定
-│   ├── unify_signatures()       :161 # 全ブロック統合→FunctionSignature
-│   └── FunctionSignature        :82  # パラメータ/戻り値/マッピング
+│   ├── VarCollector             :277 # Load/Store イベント収集
+│   ├── analyze_block()          :47  # 入力+出力を特定
+│   ├── unify_signatures()       :208 # 全ブロック統合→FunctionSignature
+│   └── FunctionSignature        :129 # パラメータ/戻り値/マッピング
 │
 ├── diff_extract.rs   # ブロック間差分抽出
 │   ├── Divergence               :10  # Name | Literal
@@ -405,15 +374,15 @@ src/
 │   └── diff_exprs()             :    # 式レベル分岐（再帰）
 │
 ├── rewrite.rs        # コード生成 + 置換
-│   ├── NodePosition             :15  # AST ノードのバイト位置
-│   ├── generate_function_def()  :28  # 関数定義テキスト生成
-│   ├── generate_call()          :88  # 関数呼び出しテキスト生成
-│   ├── apply_block_edits()      :111 # 末尾→先頭の順でテキスト置換
-│   ├── apply_refactoring()      :147 # 単一ファイル適用
-│   └── apply_refactoring_multi():263 # マルチファイル適用
+│   ├── NodePosition             :30  # AST ノードのバイト位置
+│   ├── generate_function_def()  :50  # 関数定義テキスト生成
+│   ├── generate_call()          :112 # 関数呼び出しテキスト生成
+│   ├── apply_block_edits()      :135 # 末尾→先頭の順でテキスト置換
+│   ├── apply_refactoring()      :171 # 単一ファイル適用
+│   └── apply_refactoring_multi():292 # マルチファイル適用
 │
 ├── safety.rs         # 抽出可能性の検証
-│   └── check_extractable()      # break/continue/return/yield の安全性チェック
+│   └── check_extractable()  :37 # break/continue/return/yield の安全性チェック
 │
 └── interactive.rs    # 対話モード (dialoguer)
     ├── run_interactive()         # 単一ファイル対話フロー
@@ -444,13 +413,13 @@ struct MatchedBlock {
     end_line: usize,       // 1-based 終了行
 }
 
-// lib.rs:82
+// lib.rs:88
 struct SourcedBlock {
     block: MatchedBlock,
     source_index: usize,   // 0=ターゲット, 1+=追加ファイル
 }
 
-// scope.rs:82
+// scope.rs:129
 struct FunctionSignature {
     params: Vec<String>,                // ["arg_0", "arg_1"]
     returns: Vec<String>,               // ["ret_0"] or ["arg_0"] (入力=出力の場合)
@@ -464,18 +433,22 @@ enum Divergence {
     Literal(String, String),  // リテラル値 "1" vs "10"
 }
 
-// lib.rs:67
+// lib.rs:69
 struct ExtractionPlan {
     sig: FunctionSignature,
     scope_ctx: ScopeContext,              // 配置先スコープ
     ref_node_positions: Vec<NodePosition>,// ブロック0のASTノード位置
     block_stores: Vec<Vec<String>>,       // 対話モード用: 追加戻り値候補
+    divergent_literal_offsets: Vec<usize>,// divergentリテラルのバイト位置
 }
 
-// rewrite.rs:15
+// rewrite.rs:30
 struct NodePosition {
-    offset: usize,  // バイトオフセット
-    len: usize,     // バイト長
+    offset: usize,                       // バイトオフセット
+    len: usize,                          // バイト長
+    override_text: Option<String>,       // f-string セグメント用の rename_map キー
+    kind: ReplacementKind,               // Normal | FStringSegment
+    is_name: bool,                       // true=Name, false=literal
 }
 ```
 
@@ -564,14 +537,12 @@ Expr::Attribute(ExprAttribute { value, attr, ctx: _, range: _ }) => {
 
 ---
 
-## 制約と未実装機能
+## 制約と既知の制限
 
-詳細は以下のドキュメントを参照:
-- **抽出可能性の検証** (`SafetyChecker`): `design_doc.md` Iter 9 (実装済み)
-- **制御フロー内スキャン**: `design_doc.md` Iter 8 (次のタスク)
-- **ハッシュ漏れ** (`.attr`, `is_async` 等): 本ドキュメントの「正規化されるもの / されないもの」テーブル
-- **Lambda スコープ**: 本ドキュメントの「Visitor パターンと既知の落とし穴」セクション
-- **今後のタスク**: `PROGRESS.md` の Next Steps
+- **動的構文**: `eval()`, `exec()`, `locals()`, `globals()` を含むブロックは非対応
+- **IPython**: `IpyEscapeCommand` を含むコードは非対応
+- **型推論**: 型推論やクラス継承を考慮した意味的マッチングは非対応
+- **SafetyChecker**: `break`/`continue`/`return`/`yield` を含むブロックはエラーで拒否（ネストしたループ/関数内は安全）
 
 ---
 
@@ -605,7 +576,7 @@ cargo run -- example.py 1 3 --no-interactive --write
 
 ### テストの追加方法
 
-`tests/fixtures/` にディレクトリを作成するだけで自動検出される (`tests/integration.rs:207`):
+`tests/fixtures/` にディレクトリを作成するだけで自動検出される:
 
 ```
 tests/fixtures/my_test_case/
