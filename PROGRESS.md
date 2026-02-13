@@ -1,5 +1,7 @@
 # PROGRESS.md
 
+AIがPROGRESSを管理するためのもの。PhaseやIter内のProgressを管理するために用いる。
+
 ## Current State
 - Phase 1-5 + Iter 1-12 完了
 - 117 tests, Latest commit: `aab5c21`

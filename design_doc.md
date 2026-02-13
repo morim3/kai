@@ -1,6 +1,15 @@
 
 # Design Doc: Python Extract Method Refactoring Tool (Rust)
 
+人間とAIが作るべきもの、作り方についての理解を深めるためのドキュメント。
+プロジェクト全体に関係する文章については、消去されることは原則としてない。
+一方で機能追加に伴って更新されることは考えられる。
+また、Iteration管理は新しいiterに進むたびに、古いIterationは整理されるべきである。
+直前, 直後のiterは詳しく書き、過去/未来になればなるほどのiterの内容は簡潔にされるべきである。
+iterationの中身は背景、内容と終了条件で構成される。
+詳細が確定して実装された内容については、整理されonboardingなどに移されるべきである。基本的にcodeが真のドキュメントであり、それをわかりやすくするためにonboardingがある。
+
+
 ## 1. Overview (概要)
 * **目的:** ユーザーが指定したPythonのコード片（リファレンスブロック）を基準として、同一ファイル内から「構造的に一致する」他のコードブロックを検索し、それらをまとめて1つの共通関数として抽出・置換するリファクタリングツールをRustで開発する。
 * **アプローチ:** AST（抽象構文木）の正規化比較とデータフロー解析による、決定論的なコード変換。
@@ -24,8 +33,6 @@
 ## 3. Architecture & Core Crates (アーキテクチャと利用クレート)
 Rustの堅牢なエコシステム、特にPython解析のデファクトスタンダードとなりつつあるRuffの基盤を活用する。
 
-
-
 * **パーサー & AST操作 (`ruff_python_parser`, `ruff_python_ast`, `ruff_text_size`):**
     * Pythonコードから型安全なASTを構築し、`Visitor` トレイトを用いてノードを巡回する。`ruff_text_size` を用いて、元のソースコードのバイトオフセットを正確に追跡し、非破壊的な書き換え（Edit）を実現する。
 * **ハッシュ計算 (`rustc-hash`):**
@@ -39,8 +46,6 @@ Rustの堅牢なエコシステム、特にPython解析のデファクトスタ�
 
 ### A. 構造的正規化とハッシュ化 (Structural Normalization)
 `ruff_python_ast::Visitor` を実装し、指定されたコード片のASTをトラバースする。
-
-
 
 * `Expr::Name` (変数参照/代入) → 実際の変数名を無視し、出現順序に基づく相対的なタグ（例: `VAR_0`, `VAR_1`）に置き換えてハッシュ化。
 * `Expr::Constant` (リテラル等) → 実際の値を無視し、一律 `CONSTANT` トークンとしてハッシュ化。
@@ -89,7 +94,7 @@ Rustの堅牢なエコシステム、特にPython解析のデファクトスタ�
 
 ---
 
-### Iter 8: 制御フロー内ブロックスキャン
+### Iter 8: 制御フロー内ブロックスキャン ✅
 
 * **背景:** 現在の `scan_all_bodies_recursive` は `FunctionDef` と `ClassDef` の body のみに再帰する。
   `if`/`for`/`while`/`with`/`try`/`match` の内部にあるブロックは探索対象外。
@@ -126,21 +131,9 @@ Rustの堅牢なエコシステム、特にPython解析のデファクトスタ�
   3. **`find_body_for_block`** (`scan.rs`): `find_innermost_body` → `find_scopes` 経由で
      制御フロー内のブロックが所属する body を正しく返す必要がある。
 
-  4. **After-block 計算の課題:**
-     制御フロー内のブロックの after_block は「同一 body 内の後続文」のみ。
-     親スコープの後続文は含まれないため、output 検出が conservative になる場合がある。
-
-     ```python
-     def process():
-         if True:
-             x = 1        # block
-             y = x + 2    # block
-         print(y)         # 親スコープ → after_block に含まれない
-     ```
-
-     対策案:
-     - **A. Conservative (初期実装):** 同一 body 内の後続文のみ。output が不足する場合は対話モードで手動追加。
-     - **B. Walk-up (将来):** 制御フロー body の後続文 + 親スコープ body の後続文を連結。
+  4. **After-block スコープ境界収集:** ✅ `303da1d` で解決。
+     `collect_after_stmts()` が制御フロー body を再帰降下してブロックを見つけ、
+     各ネストレベルで後続文を収集し、Python スコープ境界まで遡る（方式 B）。
 
 * **テスト (フィクスチャ — 制御フロー全種類):**
 
