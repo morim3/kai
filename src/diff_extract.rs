@@ -345,34 +345,26 @@ fn diff_exprs(a: &Expr, b: &Expr, sa: &str, sb: &str, out: &mut Vec<Divergence>)
             diff_comprehensions(&a.generators, &b.generators, sa, sb, out)?;
         }
         (Expr::FString(a), Expr::FString(b)) => {
-            // If any literal segment differs, treat the whole f-string as one
-            // opaque Literal divergence. The call site passes the original
-            // f-string expression as an argument (e.g., f"Pending: {x}").
-            if fstring_has_literal_diff(a, b) {
-                let a_text = &sa[a.range().start().to_usize()..a.range().end().to_usize()];
-                let b_text = &sb[b.range().start().to_usize()..b.range().end().to_usize()];
-                out.push(Divergence::Literal(a_text.to_string(), b_text.to_string()));
-            } else {
-                for (pa, pb) in a.value.iter().zip(b.value.iter()) {
-                    match (pa, pb) {
-                        (FStringPart::FString(fa), FStringPart::FString(fb)) => {
-                            diff_interpolated_elements(&fa.elements, &fb.elements, sa, sb, out)?;
-                        }
-                        (FStringPart::Literal(_), FStringPart::Literal(_)) => {}
-                        _ => bail!("mismatched f-string parts in structurally identical blocks"),
+            for (pa, pb) in a.value.iter().zip(b.value.iter()) {
+                match (pa, pb) {
+                    (FStringPart::FString(fa), FStringPart::FString(fb)) => {
+                        diff_interpolated_elements(&fa.elements, &fb.elements, sa, sb, out)?;
                     }
+                    (FStringPart::Literal(la), FStringPart::Literal(lb)) => {
+                        if la.value != lb.value {
+                            out.push(Divergence::Literal(
+                                quote_fstring_segment(&la.value),
+                                quote_fstring_segment(&lb.value),
+                            ));
+                        }
+                    }
+                    _ => bail!("mismatched f-string parts in structurally identical blocks"),
                 }
             }
         }
         (Expr::TString(a), Expr::TString(b)) => {
-            if tstring_has_literal_diff(a, b) {
-                let a_text = &sa[a.range().start().to_usize()..a.range().end().to_usize()];
-                let b_text = &sb[b.range().start().to_usize()..b.range().end().to_usize()];
-                out.push(Divergence::Literal(a_text.to_string(), b_text.to_string()));
-            } else {
-                for (ta, tb) in a.value.iter().zip(b.value.iter()) {
-                    diff_interpolated_elements(&ta.elements, &tb.elements, sa, sb, out)?;
-                }
+            for (ta, tb) in a.value.iter().zip(b.value.iter()) {
+                diff_interpolated_elements(&ta.elements, &tb.elements, sa, sb, out)?;
             }
         }
         (Expr::IpyEscapeCommand(_), Expr::IpyEscapeCommand(_)) => {
@@ -421,8 +413,13 @@ fn diff_interpolated_elements(
                     diff_interpolated_elements(&fa.elements, &fb.elements, sa, sb, out)?;
                 }
             }
-            (InterpolatedStringElement::Literal(_), InterpolatedStringElement::Literal(_)) => {
-                // Only reached when the caller verified no literal diffs exist.
+            (InterpolatedStringElement::Literal(la), InterpolatedStringElement::Literal(lb)) => {
+                if la.value != lb.value {
+                    out.push(Divergence::Literal(
+                        quote_fstring_segment(&la.value),
+                        quote_fstring_segment(&lb.value),
+                    ));
+                }
             }
             _ => bail!("mismatched interpolated string elements in structurally identical blocks"),
         }
@@ -430,48 +427,12 @@ fn diff_interpolated_elements(
     Ok(())
 }
 
-/// Check if any literal segments differ between two f-string expressions.
-fn fstring_has_literal_diff(
-    a: &ruff_python_ast::ExprFString,
-    b: &ruff_python_ast::ExprFString,
-) -> bool {
-    a.value
-        .iter()
-        .zip(b.value.iter())
-        .any(|(pa, pb)| match (pa, pb) {
-            (FStringPart::FString(fa), FStringPart::FString(fb)) => {
-                elements_have_literal_diff(&fa.elements, &fb.elements)
-            }
-            (FStringPart::Literal(la), FStringPart::Literal(lb)) => la.value != lb.value,
-            _ => false,
-        })
-}
-
-/// Check if any literal segments differ between two t-string expressions.
-fn tstring_has_literal_diff(
-    a: &ruff_python_ast::ExprTString,
-    b: &ruff_python_ast::ExprTString,
-) -> bool {
-    a.value
-        .iter()
-        .zip(b.value.iter())
-        .any(|(ta, tb)| elements_have_literal_diff(&ta.elements, &tb.elements))
-}
-
-/// Check if any literal elements differ between two interpolated element sequences.
-fn elements_have_literal_diff(
-    a: &[InterpolatedStringElement],
-    b: &[InterpolatedStringElement],
-) -> bool {
-    a.iter().zip(b.iter()).any(|(ea, eb)| {
-        matches!(
-            (ea, eb),
-            (
-                InterpolatedStringElement::Literal(la),
-                InterpolatedStringElement::Literal(lb),
-            ) if la.value != lb.value
-        )
-    })
+/// Quote an f-string literal segment value as a Python string literal.
+///
+/// Used for both divergence values (call-site arguments) and
+/// `NodePosition::override_text` (rename-map lookup key).
+pub fn quote_fstring_segment(raw: &str) -> String {
+    format!("\"{}\"", raw.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// Diff parameter default values and names across two `Parameters` structs.
@@ -834,24 +795,23 @@ mod tests {
     }
 
     #[test]
-    fn fstring_literal_diff_whole_expression() {
-        // Different literal segments → whole f-string becomes one Literal divergence.
-        // Inner variables are NOT emitted as separate Name divergences.
+    fn fstring_literal_segment_divergence() {
+        // Different literal segments → per-segment Literal divergences (quoted).
         assert_eq!(
             divs(
                 "s = f\"Pending: {order_id}\"",
                 "s = f\"Shipped: {order_id}\""
             ),
-            vec![l("f\"Pending: {order_id}\"", "f\"Shipped: {order_id}\"")]
+            vec![l("\"Pending: \"", "\"Shipped: \"")]
         );
     }
 
     #[test]
-    fn fstring_literal_and_expr_diff_whole_expression() {
-        // Both literal and expression differ → still one whole-expression divergence.
+    fn fstring_literal_and_expr_divergence() {
+        // Both literal and expression differ → separate divergences.
         assert_eq!(
             divs("s = f\"Pending: {order_a}\"", "s = f\"Shipped: {order_b}\""),
-            vec![l("f\"Pending: {order_a}\"", "f\"Shipped: {order_b}\"")]
+            vec![l("\"Pending: \"", "\"Shipped: \""), n("order_a", "order_b")]
         );
     }
 

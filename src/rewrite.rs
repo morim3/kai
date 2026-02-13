@@ -1,23 +1,29 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
-use ruff_python_ast::visitor::{Visitor, walk_expr};
-use ruff_python_ast::{Expr, Stmt};
+use ruff_python_ast::visitor::{Visitor, walk_expr, walk_interpolated_string_element};
+use ruff_python_ast::{Expr, InterpolatedStringElement, Stmt};
 use ruff_text_size::Ranged;
 use similar::TextDiff;
 
 use crate::SourcedBlock;
+use crate::diff_extract::quote_fstring_segment;
 use crate::normalize::indent_at_offset;
 use crate::scan::{MatchedBlock, ScopeContext, ScopeKind};
 use crate::scope::FunctionSignature;
 
-/// Byte position of an AST node (Name or literal) in source text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Byte position of an AST node (Name, literal, or f-string segment) in source text.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodePosition {
     /// Byte offset from the start of the source.
     pub offset: usize,
     /// Byte length of the node's source text.
     pub len: usize,
+    /// For f-string literal segments: the quoted text used as rename_map key
+    /// (e.g., `"\"Pending: \""`). `None` for normal Name/literal nodes.
+    pub override_text: Option<String>,
+    /// When true, the replacement is wrapped in `{}` to form an f-string interpolation.
+    pub fstring_literal: bool,
 }
 
 /// Generate the extracted function definition as a string.
@@ -396,35 +402,31 @@ fn replace_names_ast(
     rename_map: &HashMap<&str, &str>,
 ) -> String {
     // For each collected node, extract its source text and check the rename map.
-    let mut replacements: Vec<(usize, usize, &str)> = Vec::new();
+    // For f-string literal segments, use override_text as the lookup key.
+    let mut replacements: Vec<(usize, usize, String)> = Vec::new();
     for pos in node_positions {
-        let original_text = &source[pos.offset..pos.offset + pos.len];
-        if let Some(&new_name) = rename_map.get(original_text) {
+        let lookup_key = match &pos.override_text {
+            Some(text) => text.as_str(),
+            None => &source[pos.offset..pos.offset + pos.len],
+        };
+        if let Some(&new_name) = rename_map.get(lookup_key) {
             let body_offset = pos.offset - block_start + indent_len;
-            replacements.push((body_offset, pos.len, new_name));
+            // For f-string literal segments, wrap replacement in {} to form interpolation.
+            let replacement = if pos.fstring_literal {
+                format!("{{{new_name}}}")
+            } else {
+                new_name.to_string()
+            };
+            replacements.push((body_offset, pos.len, replacement));
         }
     }
 
-    // Filter out replacements that are strictly contained within a larger one.
-    // This handles the case where an FString is a whole-expression divergence:
-    // inner Name positions must be skipped to avoid conflicting replacements.
-    let filtered: Vec<_> = replacements
-        .iter()
-        .filter(|&&(off, len, _)| {
-            !replacements
-                .iter()
-                .any(|&(off2, len2, _)| len2 > len && off2 <= off && off + len <= off2 + len2)
-        })
-        .copied()
-        .collect();
-
     // Sort descending by offset so replacements don't invalidate each other.
-    let mut filtered = filtered;
-    filtered.sort_by(|a, b| b.0.cmp(&a.0));
+    replacements.sort_by(|a, b| b.0.cmp(&a.0));
 
     let mut result = body_text.to_string();
-    for (offset, len, new_name) in &filtered {
-        result.replace_range(*offset..*offset + *len, new_name);
+    for (offset, len, replacement) in &replacements {
+        result.replace_range(*offset..*offset + *len, replacement);
     }
     result
 }
@@ -456,16 +458,34 @@ impl<'a> Visitor<'a> for NodeCollector {
                 | Expr::StringLiteral(_)
                 | Expr::BytesLiteral(_)
                 | Expr::BooleanLiteral(_)
-                | Expr::FString(_)
-                | Expr::TString(_)
         );
         if collect {
             let range = expr.range();
             let start = range.start().to_usize();
             let len = range.end().to_usize() - start;
-            self.positions.push(NodePosition { offset: start, len });
+            self.positions.push(NodePosition {
+                offset: start,
+                len,
+                override_text: None,
+                fstring_literal: false,
+            });
         }
         walk_expr(self, expr);
+    }
+
+    fn visit_interpolated_string_element(&mut self, element: &'a InterpolatedStringElement) {
+        if let InterpolatedStringElement::Literal(lit) = element {
+            let range = lit.range();
+            let start = range.start().to_usize();
+            let len = range.end().to_usize() - start;
+            self.positions.push(NodePosition {
+                offset: start,
+                len,
+                override_text: Some(quote_fstring_segment(&lit.value)),
+                fstring_literal: true,
+            });
+        }
+        walk_interpolated_string_element(self, element);
     }
 }
 
