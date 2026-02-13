@@ -32,9 +32,11 @@ pub fn extract_divergences(
 ) -> Result<(Vec<Divergence>, Vec<usize>)> {
     let mut divergences = Vec::new();
     let mut lit_offsets = Vec::new();
+
     for (a, b) in block_a.iter().zip(block_b.iter()) {
         diff_stmts(a, b, source_a, source_b, &mut divergences, &mut lit_offsets)?;
     }
+
     Ok((divergences, lit_offsets))
 }
 
@@ -472,28 +474,36 @@ fn diff_parameters(
     out: &mut Vec<Divergence>,
     lo: &mut Vec<usize>,
 ) -> Result<()> {
-    let diff_param_with_defaults = |a: &[ParameterWithDefault],
-                                    b: &[ParameterWithDefault],
-                                    out: &mut Vec<Divergence>,
-                                    lo: &mut Vec<usize>|
-     -> Result<()> {
-        for (pa, pb) in a.iter().zip(b.iter()) {
-            diff_param_names(&pa.parameter, &pb.parameter, out);
-            if let (Some(da), Some(db)) = (&pa.default, &pb.default) {
-                diff_exprs(da, db, sa, sb, out, lo)?;
-            }
-        }
-        Ok(())
-    };
+    diff_param_with_defaults(&a.posonlyargs, &b.posonlyargs, sa, sb, out, lo)?;
+    diff_param_with_defaults(&a.args, &b.args, sa, sb, out, lo)?;
 
-    diff_param_with_defaults(&a.posonlyargs, &b.posonlyargs, out, lo)?;
-    diff_param_with_defaults(&a.args, &b.args, out, lo)?;
     if let (Some(va), Some(vb)) = (&a.vararg, &b.vararg) {
         diff_param_names(va, vb, out);
     }
-    diff_param_with_defaults(&a.kwonlyargs, &b.kwonlyargs, out, lo)?;
+
+    diff_param_with_defaults(&a.kwonlyargs, &b.kwonlyargs, sa, sb, out, lo)?;
+
     if let (Some(ka), Some(kb)) = (&a.kwarg, &b.kwarg) {
         diff_param_names(ka, kb, out);
+    }
+
+    Ok(())
+}
+
+/// Diff a list of parameters with defaults.
+fn diff_param_with_defaults(
+    a: &[ParameterWithDefault],
+    b: &[ParameterWithDefault],
+    sa: &str,
+    sb: &str,
+    out: &mut Vec<Divergence>,
+    lo: &mut Vec<usize>,
+) -> Result<()> {
+    for (pa, pb) in a.iter().zip(b.iter()) {
+        diff_param_names(&pa.parameter, &pb.parameter, out);
+        if let (Some(da), Some(db)) = (&pa.default, &pb.default) {
+            diff_exprs(da, db, sa, sb, out, lo)?;
+        }
     }
     Ok(())
 }
