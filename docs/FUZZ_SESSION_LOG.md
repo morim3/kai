@@ -45,21 +45,24 @@ Approach C (two-stage): サブエージェント1が input.py のみ生成（exp
 - 生成: 112-136 (25件の input.py)
 - Property check 1 (valid Python?):
   - VALID: 20件 (112-115, 117-130, 134, 136)
-  - EMPTY_OUTPUT: 5件 (116, 131-133, 135) — 正当な拒否 or スコープ外
+  - EMPTY_OUTPUT: 5件 (116, 131-133, 135)
 - Property check 2 (元コードと実行結果が等価?):
   - EQUIV: 20/20件 (128は両方FileNotFoundErrorだが、ファイルがあれば等価)
-- バグ発見: 0件 (136 は bash 変数が escape を解釈する false alarm)
-- expected.py 作成: 20件 (verified actual.py をコピー)
-- 最終結果: 105/105 PASS
+- **バグ発見: 1件** — 3階層ネスト (Module→Class→Method) でマッチ検出・配置スコープが壊れる
+  - 発見経緯: 131 が EMPTY_OUTPUT → 調査 → `ScopeInfo.parent` の2階層制限が根本原因
+  - 修正: `ScopeInfo.parent` 廃止、scanner を常に module root からスキャン、配置を LCA 再帰探索に変更
+  - commit: `9ca2512` "Fix 3+ level nesting: remove ScopeInfo.parent, scan from module root"
+- expected.py 作成: 21件 (131 がバグ修正後にマッチするようになった)
+- 最終結果: 106/106 PASS
 
 ### EMPTY_OUTPUT の分析
 | Case | 原因 | カテゴリ |
 |------|------|---------|
 | 116 | `return counter` in block → SafetyChecker rejects | 正当な拒否 |
-| 131 | 別クラスの classmethod 間 — スコープ外マッチ | テスト設計の問題 |
-| 132 | 別クラスの `super().__init__()` — 別スコープ | テスト設計の問題 |
-| 133 | 別クラスの @property — 別スコープ | テスト設計の問題 |
-| 135 | 別クラスのメソッド — 別スコープ | テスト設計の問題 |
+| 131 | 別クラスの classmethod 間 — **3階層ネストバグ** | バグ → 修正済み → PASS |
+| 132 | `self.extra` vs `self.bonus` — 属性名が異なり構造不一致 | 仕様通り |
+| 133 | `self._width` vs `self._height` — 属性名が異なり構造不一致 | 仕様通り |
+| 135 | `self.result` vs `self.output` — 属性名が異なり構造不一致 | 仕様通り |
 
 ### 迷った点・気づき
 1. **bash 変数の escape 解釈**: `echo "$output"` は `r"\n"` を actual newline に変換する。
@@ -71,5 +74,9 @@ Approach C (two-stage): サブエージェント1が input.py のみ生成（exp
    sub-agent にルールベースで expected.py を書かせるよりも、ツール出力を実行して検証する方が
    false positive/negative が少ない。
 
-3. **scanner のスコープ制限**: 別々の class 定義内のメソッドは sibling scope として
-   スキャンされない（131-133, 135）。これは設計上の制限であり、バグではない。
+3. **3階層ネストバグの発見**: Session 2 の EMPTY_OUTPUT 分析で131を「テスト設計の問題」と
+   初期判定したが、実際はツールのバグだった。EMPTY_OUTPUT ケースを「仕方ない」で片付けず、
+   エラーメッセージの原因を深掘りすることがバグ発見につながった。
+
+4. **属性名は構造の一部**: `self.x` vs `self.y` は属性名が異なるため構造的に不一致。
+   これは Name divergence (変数名の違い) とは異なる扱い。仕様通りの動作。
