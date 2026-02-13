@@ -29,103 +29,111 @@ pub fn extract_divergences(
     block_b: &[Stmt],
     source_a: &str,
     source_b: &str,
-) -> Result<Vec<Divergence>> {
+) -> Result<(Vec<Divergence>, Vec<usize>)> {
     let mut divergences = Vec::new();
+    let mut lit_offsets = Vec::new();
     for (a, b) in block_a.iter().zip(block_b.iter()) {
-        diff_stmts(a, b, source_a, source_b, &mut divergences)?;
+        diff_stmts(a, b, source_a, source_b, &mut divergences, &mut lit_offsets)?;
     }
-    Ok(divergences)
+    Ok((divergences, lit_offsets))
 }
 
-fn diff_stmts(a: &Stmt, b: &Stmt, sa: &str, sb: &str, out: &mut Vec<Divergence>) -> Result<()> {
+fn diff_stmts(
+    a: &Stmt,
+    b: &Stmt,
+    sa: &str,
+    sb: &str,
+    out: &mut Vec<Divergence>,
+    lo: &mut Vec<usize>,
+) -> Result<()> {
     match (a, b) {
         (Stmt::Assign(a), Stmt::Assign(b)) => {
-            diff_exprs(&a.value, &b.value, sa, sb, out)?;
+            diff_exprs(&a.value, &b.value, sa, sb, out, lo)?;
             for (ta, tb) in a.targets.iter().zip(b.targets.iter()) {
-                diff_exprs(ta, tb, sa, sb, out)?;
+                diff_exprs(ta, tb, sa, sb, out, lo)?;
             }
         }
         (Stmt::AugAssign(a), Stmt::AugAssign(b)) => {
-            diff_exprs(&a.value, &b.value, sa, sb, out)?;
-            diff_exprs(&a.target, &b.target, sa, sb, out)?;
+            diff_exprs(&a.value, &b.value, sa, sb, out, lo)?;
+            diff_exprs(&a.target, &b.target, sa, sb, out, lo)?;
         }
         (Stmt::AnnAssign(a), Stmt::AnnAssign(b)) => {
-            diff_exprs(&a.target, &b.target, sa, sb, out)?;
-            diff_exprs(&a.annotation, &b.annotation, sa, sb, out)?;
+            diff_exprs(&a.target, &b.target, sa, sb, out, lo)?;
+            diff_exprs(&a.annotation, &b.annotation, sa, sb, out, lo)?;
             if let (Some(va), Some(vb)) = (&a.value, &b.value) {
-                diff_exprs(va, vb, sa, sb, out)?;
+                diff_exprs(va, vb, sa, sb, out, lo)?;
             }
         }
         (Stmt::Expr(a), Stmt::Expr(b)) => {
-            diff_exprs(&a.value, &b.value, sa, sb, out)?;
+            diff_exprs(&a.value, &b.value, sa, sb, out, lo)?;
         }
         (Stmt::Return(a), Stmt::Return(b)) => {
             if let (Some(va), Some(vb)) = (&a.value, &b.value) {
-                diff_exprs(va, vb, sa, sb, out)?;
+                diff_exprs(va, vb, sa, sb, out, lo)?;
             }
         }
         (Stmt::Delete(a), Stmt::Delete(b)) => {
             for (ta, tb) in a.targets.iter().zip(b.targets.iter()) {
-                diff_exprs(ta, tb, sa, sb, out)?;
+                diff_exprs(ta, tb, sa, sb, out, lo)?;
             }
         }
         (Stmt::If(a), Stmt::If(b)) => {
-            diff_exprs(&a.test, &b.test, sa, sb, out)?;
-            diff_stmt_bodies(&a.body, &b.body, sa, sb, out)?;
+            diff_exprs(&a.test, &b.test, sa, sb, out, lo)?;
+            diff_stmt_bodies(&a.body, &b.body, sa, sb, out, lo)?;
             for (ea, eb) in a.elif_else_clauses.iter().zip(b.elif_else_clauses.iter()) {
                 if let (Some(ta), Some(tb)) = (&ea.test, &eb.test) {
-                    diff_exprs(ta, tb, sa, sb, out)?;
+                    diff_exprs(ta, tb, sa, sb, out, lo)?;
                 }
-                diff_stmt_bodies(&ea.body, &eb.body, sa, sb, out)?;
+                diff_stmt_bodies(&ea.body, &eb.body, sa, sb, out, lo)?;
             }
         }
         (Stmt::For(a), Stmt::For(b)) => {
-            diff_exprs(&a.iter, &b.iter, sa, sb, out)?;
-            diff_exprs(&a.target, &b.target, sa, sb, out)?;
-            diff_stmt_bodies(&a.body, &b.body, sa, sb, out)?;
-            diff_stmt_bodies(&a.orelse, &b.orelse, sa, sb, out)?;
+            diff_exprs(&a.iter, &b.iter, sa, sb, out, lo)?;
+            diff_exprs(&a.target, &b.target, sa, sb, out, lo)?;
+            diff_stmt_bodies(&a.body, &b.body, sa, sb, out, lo)?;
+            diff_stmt_bodies(&a.orelse, &b.orelse, sa, sb, out, lo)?;
         }
         (Stmt::While(a), Stmt::While(b)) => {
-            diff_exprs(&a.test, &b.test, sa, sb, out)?;
-            diff_stmt_bodies(&a.body, &b.body, sa, sb, out)?;
-            diff_stmt_bodies(&a.orelse, &b.orelse, sa, sb, out)?;
+            diff_exprs(&a.test, &b.test, sa, sb, out, lo)?;
+            diff_stmt_bodies(&a.body, &b.body, sa, sb, out, lo)?;
+            diff_stmt_bodies(&a.orelse, &b.orelse, sa, sb, out, lo)?;
         }
         (Stmt::With(a), Stmt::With(b)) => {
             for (ia, ib) in a.items.iter().zip(b.items.iter()) {
-                diff_exprs(&ia.context_expr, &ib.context_expr, sa, sb, out)?;
+                diff_exprs(&ia.context_expr, &ib.context_expr, sa, sb, out, lo)?;
                 if let (Some(va), Some(vb)) = (&ia.optional_vars, &ib.optional_vars) {
-                    diff_exprs(va, vb, sa, sb, out)?;
+                    diff_exprs(va, vb, sa, sb, out, lo)?;
                 }
             }
-            diff_stmt_bodies(&a.body, &b.body, sa, sb, out)?;
+            diff_stmt_bodies(&a.body, &b.body, sa, sb, out, lo)?;
         }
         (Stmt::Raise(a), Stmt::Raise(b)) => {
             if let (Some(ea), Some(eb)) = (&a.exc, &b.exc) {
-                diff_exprs(ea, eb, sa, sb, out)?;
+                diff_exprs(ea, eb, sa, sb, out, lo)?;
             }
             if let (Some(ca), Some(cb)) = (&a.cause, &b.cause) {
-                diff_exprs(ca, cb, sa, sb, out)?;
+                diff_exprs(ca, cb, sa, sb, out, lo)?;
             }
         }
         (Stmt::Try(a), Stmt::Try(b)) => {
-            diff_stmt_bodies(&a.body, &b.body, sa, sb, out)?;
+            diff_stmt_bodies(&a.body, &b.body, sa, sb, out, lo)?;
             for (ha, hb) in a.handlers.iter().zip(b.handlers.iter()) {
                 let (
                     ruff_python_ast::ExceptHandler::ExceptHandler(ha),
                     ruff_python_ast::ExceptHandler::ExceptHandler(hb),
                 ) = (ha, hb);
                 if let (Some(ta), Some(tb)) = (&ha.type_, &hb.type_) {
-                    diff_exprs(ta, tb, sa, sb, out)?;
+                    diff_exprs(ta, tb, sa, sb, out, lo)?;
                 }
-                diff_stmt_bodies(&ha.body, &hb.body, sa, sb, out)?;
+                diff_stmt_bodies(&ha.body, &hb.body, sa, sb, out, lo)?;
             }
-            diff_stmt_bodies(&a.orelse, &b.orelse, sa, sb, out)?;
-            diff_stmt_bodies(&a.finalbody, &b.finalbody, sa, sb, out)?;
+            diff_stmt_bodies(&a.orelse, &b.orelse, sa, sb, out, lo)?;
+            diff_stmt_bodies(&a.finalbody, &b.finalbody, sa, sb, out, lo)?;
         }
         (Stmt::Assert(a), Stmt::Assert(b)) => {
-            diff_exprs(&a.test, &b.test, sa, sb, out)?;
+            diff_exprs(&a.test, &b.test, sa, sb, out, lo)?;
             if let (Some(ma), Some(mb)) = (&a.msg, &b.msg) {
-                diff_exprs(ma, mb, sa, sb, out)?;
+                diff_exprs(ma, mb, sa, sb, out, lo)?;
             }
         }
         // No sub-expressions to compare.
@@ -141,42 +149,42 @@ fn diff_stmts(a: &Stmt, b: &Stmt, sa: &str, sb: &str, out: &mut Vec<Divergence>)
                 out.push(Divergence::Name(a.name.to_string(), b.name.to_string()));
             }
             for (da, db) in a.decorator_list.iter().zip(b.decorator_list.iter()) {
-                diff_exprs(&da.expression, &db.expression, sa, sb, out)?;
+                diff_exprs(&da.expression, &db.expression, sa, sb, out, lo)?;
             }
-            diff_parameters(&a.parameters, &b.parameters, sa, sb, out)?;
+            diff_parameters(&a.parameters, &b.parameters, sa, sb, out, lo)?;
             if let (Some(ra), Some(rb)) = (&a.returns, &b.returns) {
-                diff_exprs(ra, rb, sa, sb, out)?;
+                diff_exprs(ra, rb, sa, sb, out, lo)?;
             }
-            diff_stmt_bodies(&a.body, &b.body, sa, sb, out)?;
+            diff_stmt_bodies(&a.body, &b.body, sa, sb, out, lo)?;
         }
         (Stmt::ClassDef(a), Stmt::ClassDef(b)) => {
             if a.name.as_str() != b.name.as_str() {
                 out.push(Divergence::Name(a.name.to_string(), b.name.to_string()));
             }
             for (da, db) in a.decorator_list.iter().zip(b.decorator_list.iter()) {
-                diff_exprs(&da.expression, &db.expression, sa, sb, out)?;
+                diff_exprs(&da.expression, &db.expression, sa, sb, out, lo)?;
             }
             if let (Some(args_a), Some(args_b)) = (&a.arguments, &b.arguments) {
-                diff_expr_slices(&args_a.args, &args_b.args, sa, sb, out)?;
+                diff_expr_slices(&args_a.args, &args_b.args, sa, sb, out, lo)?;
                 for (ka, kb) in args_a.keywords.iter().zip(args_b.keywords.iter()) {
-                    diff_exprs(&ka.value, &kb.value, sa, sb, out)?;
+                    diff_exprs(&ka.value, &kb.value, sa, sb, out, lo)?;
                 }
             }
-            diff_stmt_bodies(&a.body, &b.body, sa, sb, out)?;
+            diff_stmt_bodies(&a.body, &b.body, sa, sb, out, lo)?;
         }
         (Stmt::Match(a), Stmt::Match(b)) => {
-            diff_exprs(&a.subject, &b.subject, sa, sb, out)?;
+            diff_exprs(&a.subject, &b.subject, sa, sb, out, lo)?;
             for (ca, cb) in a.cases.iter().zip(b.cases.iter()) {
-                diff_patterns(&ca.pattern, &cb.pattern, sa, sb, out)?;
+                diff_patterns(&ca.pattern, &cb.pattern, sa, sb, out, lo)?;
                 if let (Some(ga), Some(gb)) = (&ca.guard, &cb.guard) {
-                    diff_exprs(ga, gb, sa, sb, out)?;
+                    diff_exprs(ga, gb, sa, sb, out, lo)?;
                 }
-                diff_stmt_bodies(&ca.body, &cb.body, sa, sb, out)?;
+                diff_stmt_bodies(&ca.body, &cb.body, sa, sb, out, lo)?;
             }
         }
         (Stmt::TypeAlias(a), Stmt::TypeAlias(b)) => {
-            diff_exprs(&a.name, &b.name, sa, sb, out)?;
-            diff_exprs(&a.value, &b.value, sa, sb, out)?;
+            diff_exprs(&a.name, &b.name, sa, sb, out, lo)?;
+            diff_exprs(&a.value, &b.value, sa, sb, out, lo)?;
         }
         (Stmt::IpyEscapeCommand(_), Stmt::IpyEscapeCommand(_)) => {
             bail!("divergence extraction not implemented for IPython escape commands");
@@ -195,9 +203,10 @@ fn diff_stmt_bodies(
     sa: &str,
     sb: &str,
     out: &mut Vec<Divergence>,
+    lo: &mut Vec<usize>,
 ) -> Result<()> {
     for (stmt_a, stmt_b) in a.iter().zip(b.iter()) {
-        diff_stmts(stmt_a, stmt_b, sa, sb, out)?;
+        diff_stmts(stmt_a, stmt_b, sa, sb, out, lo)?;
     }
     Ok(())
 }
@@ -208,14 +217,22 @@ fn diff_expr_slices(
     sa: &str,
     sb: &str,
     out: &mut Vec<Divergence>,
+    lo: &mut Vec<usize>,
 ) -> Result<()> {
     for (ea, eb) in a.iter().zip(b.iter()) {
-        diff_exprs(ea, eb, sa, sb, out)?;
+        diff_exprs(ea, eb, sa, sb, out, lo)?;
     }
     Ok(())
 }
 
-fn diff_exprs(a: &Expr, b: &Expr, sa: &str, sb: &str, out: &mut Vec<Divergence>) -> Result<()> {
+fn diff_exprs(
+    a: &Expr,
+    b: &Expr,
+    sa: &str,
+    sb: &str,
+    out: &mut Vec<Divergence>,
+    lo: &mut Vec<usize>,
+) -> Result<()> {
     match (a, b) {
         (Expr::Name(a), Expr::Name(b)) => {
             if a.id != b.id {
@@ -234,6 +251,7 @@ fn diff_exprs(a: &Expr, b: &Expr, sa: &str, sb: &str, out: &mut Vec<Divergence>)
             let b_text = &sb[b_range.start().to_usize()..b_range.end().to_usize()];
             if a_text != b_text {
                 out.push(Divergence::Literal(a_text.to_string(), b_text.to_string()));
+                lo.push(a_range.start().to_usize());
             }
         }
 
@@ -243,112 +261,112 @@ fn diff_exprs(a: &Expr, b: &Expr, sa: &str, sb: &str, out: &mut Vec<Divergence>)
 
         // Recurse into compound expressions.
         (Expr::BinOp(a), Expr::BinOp(b)) => {
-            diff_exprs(&a.left, &b.left, sa, sb, out)?;
-            diff_exprs(&a.right, &b.right, sa, sb, out)?;
+            diff_exprs(&a.left, &b.left, sa, sb, out, lo)?;
+            diff_exprs(&a.right, &b.right, sa, sb, out, lo)?;
         }
         (Expr::UnaryOp(a), Expr::UnaryOp(b)) => {
-            diff_exprs(&a.operand, &b.operand, sa, sb, out)?;
+            diff_exprs(&a.operand, &b.operand, sa, sb, out, lo)?;
         }
         (Expr::BoolOp(a), Expr::BoolOp(b)) => {
-            diff_expr_slices(&a.values, &b.values, sa, sb, out)?;
+            diff_expr_slices(&a.values, &b.values, sa, sb, out, lo)?;
         }
         (Expr::Named(a), Expr::Named(b)) => {
-            diff_exprs(&a.target, &b.target, sa, sb, out)?;
-            diff_exprs(&a.value, &b.value, sa, sb, out)?;
+            diff_exprs(&a.target, &b.target, sa, sb, out, lo)?;
+            diff_exprs(&a.value, &b.value, sa, sb, out, lo)?;
         }
         (Expr::Call(a), Expr::Call(b)) => {
-            diff_exprs(&a.func, &b.func, sa, sb, out)?;
-            diff_expr_slices(&a.arguments.args, &b.arguments.args, sa, sb, out)?;
+            diff_exprs(&a.func, &b.func, sa, sb, out, lo)?;
+            diff_expr_slices(&a.arguments.args, &b.arguments.args, sa, sb, out, lo)?;
             for (ka, kb) in a.arguments.keywords.iter().zip(b.arguments.keywords.iter()) {
-                diff_exprs(&ka.value, &kb.value, sa, sb, out)?;
+                diff_exprs(&ka.value, &kb.value, sa, sb, out, lo)?;
             }
         }
         (Expr::Compare(a), Expr::Compare(b)) => {
-            diff_exprs(&a.left, &b.left, sa, sb, out)?;
-            diff_expr_slices(&a.comparators, &b.comparators, sa, sb, out)?;
+            diff_exprs(&a.left, &b.left, sa, sb, out, lo)?;
+            diff_expr_slices(&a.comparators, &b.comparators, sa, sb, out, lo)?;
         }
         (Expr::Attribute(a), Expr::Attribute(b)) => {
-            diff_exprs(&a.value, &b.value, sa, sb, out)?;
+            diff_exprs(&a.value, &b.value, sa, sb, out, lo)?;
         }
         (Expr::Subscript(a), Expr::Subscript(b)) => {
-            diff_exprs(&a.value, &b.value, sa, sb, out)?;
-            diff_exprs(&a.slice, &b.slice, sa, sb, out)?;
+            diff_exprs(&a.value, &b.value, sa, sb, out, lo)?;
+            diff_exprs(&a.slice, &b.slice, sa, sb, out, lo)?;
         }
         (Expr::Starred(a), Expr::Starred(b)) => {
-            diff_exprs(&a.value, &b.value, sa, sb, out)?;
+            diff_exprs(&a.value, &b.value, sa, sb, out, lo)?;
         }
         (Expr::List(a), Expr::List(b)) => {
-            diff_expr_slices(&a.elts, &b.elts, sa, sb, out)?;
+            diff_expr_slices(&a.elts, &b.elts, sa, sb, out, lo)?;
         }
         (Expr::Tuple(a), Expr::Tuple(b)) => {
-            diff_expr_slices(&a.elts, &b.elts, sa, sb, out)?;
+            diff_expr_slices(&a.elts, &b.elts, sa, sb, out, lo)?;
         }
         (Expr::Set(a), Expr::Set(b)) => {
-            diff_expr_slices(&a.elts, &b.elts, sa, sb, out)?;
+            diff_expr_slices(&a.elts, &b.elts, sa, sb, out, lo)?;
         }
         (Expr::Dict(a), Expr::Dict(b)) => {
             for (ia, ib) in a.items.iter().zip(b.items.iter()) {
                 if let (Some(ka), Some(kb)) = (&ia.key, &ib.key) {
-                    diff_exprs(ka, kb, sa, sb, out)?;
+                    diff_exprs(ka, kb, sa, sb, out, lo)?;
                 }
-                diff_exprs(&ia.value, &ib.value, sa, sb, out)?;
+                diff_exprs(&ia.value, &ib.value, sa, sb, out, lo)?;
             }
         }
         (Expr::Slice(a), Expr::Slice(b)) => {
             if let (Some(la), Some(lb)) = (&a.lower, &b.lower) {
-                diff_exprs(la, lb, sa, sb, out)?;
+                diff_exprs(la, lb, sa, sb, out, lo)?;
             }
             if let (Some(ua), Some(ub)) = (&a.upper, &b.upper) {
-                diff_exprs(ua, ub, sa, sb, out)?;
+                diff_exprs(ua, ub, sa, sb, out, lo)?;
             }
             if let (Some(sa_), Some(sb_)) = (&a.step, &b.step) {
-                diff_exprs(sa_, sb_, sa, sb, out)?;
+                diff_exprs(sa_, sb_, sa, sb, out, lo)?;
             }
         }
         (Expr::If(a), Expr::If(b)) => {
-            diff_exprs(&a.test, &b.test, sa, sb, out)?;
-            diff_exprs(&a.body, &b.body, sa, sb, out)?;
-            diff_exprs(&a.orelse, &b.orelse, sa, sb, out)?;
+            diff_exprs(&a.test, &b.test, sa, sb, out, lo)?;
+            diff_exprs(&a.body, &b.body, sa, sb, out, lo)?;
+            diff_exprs(&a.orelse, &b.orelse, sa, sb, out, lo)?;
         }
         (Expr::Await(a), Expr::Await(b)) => {
-            diff_exprs(&a.value, &b.value, sa, sb, out)?;
+            diff_exprs(&a.value, &b.value, sa, sb, out, lo)?;
         }
         (Expr::Yield(a), Expr::Yield(b)) => {
             if let (Some(va), Some(vb)) = (&a.value, &b.value) {
-                diff_exprs(va, vb, sa, sb, out)?;
+                diff_exprs(va, vb, sa, sb, out, lo)?;
             }
         }
         (Expr::YieldFrom(a), Expr::YieldFrom(b)) => {
-            diff_exprs(&a.value, &b.value, sa, sb, out)?;
+            diff_exprs(&a.value, &b.value, sa, sb, out, lo)?;
         }
         (Expr::Lambda(a), Expr::Lambda(b)) => {
             if let (Some(pa), Some(pb)) = (&a.parameters, &b.parameters) {
-                diff_parameters(pa, pb, sa, sb, out)?;
+                diff_parameters(pa, pb, sa, sb, out, lo)?;
             }
-            diff_exprs(&a.body, &b.body, sa, sb, out)?;
+            diff_exprs(&a.body, &b.body, sa, sb, out, lo)?;
         }
         (Expr::ListComp(a), Expr::ListComp(b)) => {
-            diff_exprs(&a.elt, &b.elt, sa, sb, out)?;
-            diff_comprehensions(&a.generators, &b.generators, sa, sb, out)?;
+            diff_exprs(&a.elt, &b.elt, sa, sb, out, lo)?;
+            diff_comprehensions(&a.generators, &b.generators, sa, sb, out, lo)?;
         }
         (Expr::SetComp(a), Expr::SetComp(b)) => {
-            diff_exprs(&a.elt, &b.elt, sa, sb, out)?;
-            diff_comprehensions(&a.generators, &b.generators, sa, sb, out)?;
+            diff_exprs(&a.elt, &b.elt, sa, sb, out, lo)?;
+            diff_comprehensions(&a.generators, &b.generators, sa, sb, out, lo)?;
         }
         (Expr::DictComp(a), Expr::DictComp(b)) => {
-            diff_exprs(&a.key, &b.key, sa, sb, out)?;
-            diff_exprs(&a.value, &b.value, sa, sb, out)?;
-            diff_comprehensions(&a.generators, &b.generators, sa, sb, out)?;
+            diff_exprs(&a.key, &b.key, sa, sb, out, lo)?;
+            diff_exprs(&a.value, &b.value, sa, sb, out, lo)?;
+            diff_comprehensions(&a.generators, &b.generators, sa, sb, out, lo)?;
         }
         (Expr::Generator(a), Expr::Generator(b)) => {
-            diff_exprs(&a.elt, &b.elt, sa, sb, out)?;
-            diff_comprehensions(&a.generators, &b.generators, sa, sb, out)?;
+            diff_exprs(&a.elt, &b.elt, sa, sb, out, lo)?;
+            diff_comprehensions(&a.generators, &b.generators, sa, sb, out, lo)?;
         }
         (Expr::FString(a), Expr::FString(b)) => {
             for (pa, pb) in a.value.iter().zip(b.value.iter()) {
                 match (pa, pb) {
                     (FStringPart::FString(fa), FStringPart::FString(fb)) => {
-                        diff_interpolated_elements(&fa.elements, &fb.elements, sa, sb, out)?;
+                        diff_interpolated_elements(&fa.elements, &fb.elements, sa, sb, out, lo)?;
                     }
                     (FStringPart::Literal(la), FStringPart::Literal(lb)) => {
                         if la.value != lb.value {
@@ -356,6 +374,7 @@ fn diff_exprs(a: &Expr, b: &Expr, sa: &str, sb: &str, out: &mut Vec<Divergence>)
                                 quote_fstring_segment(&la.value),
                                 quote_fstring_segment(&lb.value),
                             ));
+                            lo.push(la.range().start().to_usize());
                         }
                     }
                     _ => bail!("mismatched f-string parts in structurally identical blocks"),
@@ -364,7 +383,7 @@ fn diff_exprs(a: &Expr, b: &Expr, sa: &str, sb: &str, out: &mut Vec<Divergence>)
         }
         (Expr::TString(a), Expr::TString(b)) => {
             for (ta, tb) in a.value.iter().zip(b.value.iter()) {
-                diff_interpolated_elements(&ta.elements, &tb.elements, sa, sb, out)?;
+                diff_interpolated_elements(&ta.elements, &tb.elements, sa, sb, out, lo)?;
             }
         }
         (Expr::IpyEscapeCommand(_), Expr::IpyEscapeCommand(_)) => {
@@ -385,11 +404,12 @@ fn diff_comprehensions(
     sa: &str,
     sb: &str,
     out: &mut Vec<Divergence>,
+    lo: &mut Vec<usize>,
 ) -> Result<()> {
     for (ca, cb) in a.iter().zip(b.iter()) {
-        diff_exprs(&ca.target, &cb.target, sa, sb, out)?;
-        diff_exprs(&ca.iter, &cb.iter, sa, sb, out)?;
-        diff_expr_slices(&ca.ifs, &cb.ifs, sa, sb, out)?;
+        diff_exprs(&ca.target, &cb.target, sa, sb, out, lo)?;
+        diff_exprs(&ca.iter, &cb.iter, sa, sb, out, lo)?;
+        diff_expr_slices(&ca.ifs, &cb.ifs, sa, sb, out, lo)?;
     }
     Ok(())
 }
@@ -401,6 +421,7 @@ fn diff_interpolated_elements(
     sa: &str,
     sb: &str,
     out: &mut Vec<Divergence>,
+    lo: &mut Vec<usize>,
 ) -> Result<()> {
     for (ea, eb) in a.iter().zip(b.iter()) {
         match (ea, eb) {
@@ -408,9 +429,9 @@ fn diff_interpolated_elements(
                 InterpolatedStringElement::Interpolation(ia),
                 InterpolatedStringElement::Interpolation(ib),
             ) => {
-                diff_exprs(&ia.expression, &ib.expression, sa, sb, out)?;
+                diff_exprs(&ia.expression, &ib.expression, sa, sb, out, lo)?;
                 if let (Some(fa), Some(fb)) = (&ia.format_spec, &ib.format_spec) {
-                    diff_interpolated_elements(&fa.elements, &fb.elements, sa, sb, out)?;
+                    diff_interpolated_elements(&fa.elements, &fb.elements, sa, sb, out, lo)?;
                 }
             }
             (InterpolatedStringElement::Literal(la), InterpolatedStringElement::Literal(lb)) => {
@@ -419,6 +440,7 @@ fn diff_interpolated_elements(
                         quote_fstring_segment(&la.value),
                         quote_fstring_segment(&lb.value),
                     ));
+                    lo.push(la.range().start().to_usize());
                 }
             }
             _ => bail!("mismatched interpolated string elements in structurally identical blocks"),
@@ -448,26 +470,28 @@ fn diff_parameters(
     sa: &str,
     sb: &str,
     out: &mut Vec<Divergence>,
+    lo: &mut Vec<usize>,
 ) -> Result<()> {
     let diff_param_with_defaults = |a: &[ParameterWithDefault],
                                     b: &[ParameterWithDefault],
-                                    out: &mut Vec<Divergence>|
+                                    out: &mut Vec<Divergence>,
+                                    lo: &mut Vec<usize>|
      -> Result<()> {
         for (pa, pb) in a.iter().zip(b.iter()) {
             diff_param_names(&pa.parameter, &pb.parameter, out);
             if let (Some(da), Some(db)) = (&pa.default, &pb.default) {
-                diff_exprs(da, db, sa, sb, out)?;
+                diff_exprs(da, db, sa, sb, out, lo)?;
             }
         }
         Ok(())
     };
 
-    diff_param_with_defaults(&a.posonlyargs, &b.posonlyargs, out)?;
-    diff_param_with_defaults(&a.args, &b.args, out)?;
+    diff_param_with_defaults(&a.posonlyargs, &b.posonlyargs, out, lo)?;
+    diff_param_with_defaults(&a.args, &b.args, out, lo)?;
     if let (Some(va), Some(vb)) = (&a.vararg, &b.vararg) {
         diff_param_names(va, vb, out);
     }
-    diff_param_with_defaults(&a.kwonlyargs, &b.kwonlyargs, out)?;
+    diff_param_with_defaults(&a.kwonlyargs, &b.kwonlyargs, out, lo)?;
     if let (Some(ka), Some(kb)) = (&a.kwarg, &b.kwarg) {
         diff_param_names(ka, kb, out);
     }
@@ -488,27 +512,28 @@ fn diff_patterns(
     sa: &str,
     sb: &str,
     out: &mut Vec<Divergence>,
+    lo: &mut Vec<usize>,
 ) -> Result<()> {
     match (a, b) {
         (Pattern::MatchValue(a), Pattern::MatchValue(b)) => {
             // MatchValue divergences are prevented at the hash stage:
             // different literal values produce different structural hashes,
             // so blocks with different case values never match.
-            diff_exprs(&a.value, &b.value, sa, sb, out)?;
+            diff_exprs(&a.value, &b.value, sa, sb, out, lo)?;
         }
         (Pattern::MatchSingleton(_), Pattern::MatchSingleton(_)) => {
             // None / True / False — no sub-expressions to diff
         }
         (Pattern::MatchSequence(a), Pattern::MatchSequence(b)) => {
             for (pa, pb) in a.patterns.iter().zip(b.patterns.iter()) {
-                diff_patterns(pa, pb, sa, sb, out)?;
+                diff_patterns(pa, pb, sa, sb, out, lo)?;
             }
         }
         (Pattern::MatchMapping(a), Pattern::MatchMapping(b)) => {
             // MatchMapping key divergences are prevented at the hash stage.
-            diff_expr_slices(&a.keys, &b.keys, sa, sb, out)?;
+            diff_expr_slices(&a.keys, &b.keys, sa, sb, out, lo)?;
             for (pa, pb) in a.patterns.iter().zip(b.patterns.iter()) {
-                diff_patterns(pa, pb, sa, sb, out)?;
+                diff_patterns(pa, pb, sa, sb, out, lo)?;
             }
             if let (Some(ra), Some(rb)) = (&a.rest, &b.rest)
                 && ra.as_str() != rb.as_str()
@@ -517,12 +542,12 @@ fn diff_patterns(
             }
         }
         (Pattern::MatchClass(a), Pattern::MatchClass(b)) => {
-            diff_exprs(&a.cls, &b.cls, sa, sb, out)?;
+            diff_exprs(&a.cls, &b.cls, sa, sb, out, lo)?;
             for (pa, pb) in a.arguments.patterns.iter().zip(b.arguments.patterns.iter()) {
-                diff_patterns(pa, pb, sa, sb, out)?;
+                diff_patterns(pa, pb, sa, sb, out, lo)?;
             }
             for (ka, kb) in a.arguments.keywords.iter().zip(b.arguments.keywords.iter()) {
-                diff_patterns(&ka.pattern, &kb.pattern, sa, sb, out)?;
+                diff_patterns(&ka.pattern, &kb.pattern, sa, sb, out, lo)?;
             }
         }
         (Pattern::MatchStar(a), Pattern::MatchStar(b)) => {
@@ -534,7 +559,7 @@ fn diff_patterns(
         }
         (Pattern::MatchAs(a), Pattern::MatchAs(b)) => {
             if let (Some(pa), Some(pb)) = (&a.pattern, &b.pattern) {
-                diff_patterns(pa, pb, sa, sb, out)?;
+                diff_patterns(pa, pb, sa, sb, out, lo)?;
             }
             if let (Some(na), Some(nb)) = (&a.name, &b.name)
                 && na.as_str() != nb.as_str()
@@ -544,7 +569,7 @@ fn diff_patterns(
         }
         (Pattern::MatchOr(a), Pattern::MatchOr(b)) => {
             for (pa, pb) in a.patterns.iter().zip(b.patterns.iter()) {
-                diff_patterns(pa, pb, sa, sb, out)?;
+                diff_patterns(pa, pb, sa, sb, out, lo)?;
             }
         }
         _ => {
@@ -571,7 +596,7 @@ mod tests {
     fn divs(src_a: &str, src_b: &str) -> Vec<Divergence> {
         let a = parse_stmts(src_a);
         let b = parse_stmts(src_b);
-        extract_divergences(&a, &b, src_a, src_b).unwrap()
+        extract_divergences(&a, &b, src_a, src_b).unwrap().0
     }
 
     // --- Basic divergence types ---

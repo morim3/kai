@@ -77,6 +77,10 @@ pub struct ExtractionPlan {
     /// `block_stores[i]` corresponds to `blocks[i]`. Used by interactive mode
     /// to offer additional return value candidates.
     pub block_stores: Vec<Vec<String>>,
+    /// Byte offsets (in block 0's source) of divergent literal nodes.
+    /// Used to avoid replacing non-divergent literals that happen to share
+    /// the same text as a divergent one.
+    pub divergent_literal_offsets: Vec<usize>,
 }
 
 /// A matched block tagged with the index of the source file it came from.
@@ -221,15 +225,20 @@ pub fn plan_extraction_multi(
 
     // Extract divergences between block 0 and each other block.
     let mut all_divs = Vec::new();
+    let mut divergent_literal_offsets = Vec::new();
     if sig_inputs.len() >= 2 {
         let (ref_block, _) = &sig_inputs[0];
         for (i, (other_block, _)) in sig_inputs.iter().enumerate().skip(1) {
-            let divs = diff_extract::extract_divergences(
+            let (divs, lit_offsets) = diff_extract::extract_divergences(
                 ref_block,
                 other_block,
                 sources[blocks[0].source_index],
                 sources[blocks[i].source_index],
             )?;
+            // Use the first comparison's literal offsets (block 0 vs block 1).
+            if i == 1 {
+                divergent_literal_offsets = lit_offsets;
+            }
             all_divs.push(divs);
         }
     }
@@ -256,6 +265,7 @@ pub fn plan_extraction_multi(
         scope_ctx,
         ref_node_positions,
         block_stores,
+        divergent_literal_offsets,
     })
 }
 
@@ -309,6 +319,7 @@ pub fn extract_method_with_options(
         &plan.sig,
         func_name,
         &plan.scope_ctx,
+        &plan.divergent_literal_offsets,
     ))
 }
 
@@ -394,6 +405,7 @@ d = c + 20
             &plan.sig,
             "extracted_func_0",
             &plan.scope_ctx,
+            &plan.divergent_literal_offsets,
         );
 
         assert_eq!(one_shot, two_stage, "Two-stage should match one-shot");

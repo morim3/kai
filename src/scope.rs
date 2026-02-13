@@ -547,8 +547,9 @@ mod tests {
 
         let src_a = "c = a + b";
         let src_b = "z = x + y";
-        let divs =
-            crate::diff_extract::extract_divergences(&block_a, &block_b, src_a, src_b).unwrap();
+        let divs = crate::diff_extract::extract_divergences(&block_a, &block_b, src_a, src_b)
+            .unwrap()
+            .0;
 
         let after_a_refs: Vec<&Stmt> = after_a.iter().collect();
         let after_b_refs: Vec<&Stmt> = after_b.iter().collect();
@@ -591,10 +592,12 @@ mod tests {
         let block_c = parse_stmts(src_c);
 
         // Divergences: block_a vs block_b, block_a vs block_c
-        let divs_ab =
-            crate::diff_extract::extract_divergences(&block_a, &block_b, src_a, src_b).unwrap();
-        let divs_ac =
-            crate::diff_extract::extract_divergences(&block_a, &block_c, src_a, src_c).unwrap();
+        let divs_ab = crate::diff_extract::extract_divergences(&block_a, &block_b, src_a, src_b)
+            .unwrap()
+            .0;
+        let divs_ac = crate::diff_extract::extract_divergences(&block_a, &block_c, src_a, src_c)
+            .unwrap()
+            .0;
 
         let empty_refs: Vec<&Stmt> = Vec::new();
         let sig = unify_signatures(

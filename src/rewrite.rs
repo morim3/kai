@@ -37,6 +37,8 @@ pub struct NodePosition {
     pub override_text: Option<String>,
     /// How the replacement should be wrapped.
     pub kind: ReplacementKind,
+    /// True for `Expr::Name` nodes, false for literal nodes.
+    pub is_name: bool,
 }
 
 /// Generate the extracted function definition as a string.
@@ -52,6 +54,7 @@ pub fn generate_function_def(
     sig: &FunctionSignature,
     func_name: &str,
     scope: &ScopeContext,
+    divergent_literal_offsets: &[usize],
 ) -> String {
     let body_text = &source[reference_block.start_offset..reference_block.end_offset];
 
@@ -75,6 +78,7 @@ pub fn generate_function_def(
         reference_block.start_offset,
         original_indent.len(),
         &rename_map,
+        divergent_literal_offsets,
     );
 
     // For Class scope, the function is placed outside the class at the parent indent.
@@ -171,6 +175,7 @@ pub fn apply_refactoring(
     sig: &FunctionSignature,
     func_name: &str,
     scope: &ScopeContext,
+    divergent_literal_offsets: &[usize],
 ) -> String {
     let func_def = generate_function_def(
         source,
@@ -179,6 +184,7 @@ pub fn apply_refactoring(
         sig,
         func_name,
         scope,
+        divergent_literal_offsets,
     );
 
     let edits = build_call_edits(source, blocks.iter().enumerate(), sig, func_name);
@@ -282,6 +288,7 @@ fn has_import(source: &str, module_stem: &str, func_name: &str) -> bool {
 ///
 /// - `sources[0]` (target): gets the function definition + block replacements.
 /// - `sources[1+]` (extra files): get block replacements + import insertion.
+#[allow(clippy::too_many_arguments)]
 pub fn apply_refactoring_multi(
     sources: &[&str],
     blocks: &[SourcedBlock],
@@ -290,6 +297,7 @@ pub fn apply_refactoring_multi(
     func_name: &str,
     scope: &ScopeContext,
     target_file_stem: &str,
+    divergent_literal_offsets: &[usize],
 ) -> Vec<String> {
     // Group blocks by source_index while preserving their position in the
     // original `blocks` slice (needed for block_arg_maps indexing).
@@ -327,6 +335,7 @@ pub fn apply_refactoring_multi(
                 &file_sig,
                 func_name,
                 scope,
+                divergent_literal_offsets,
             ));
         } else {
             // Extra file: replace blocks with calls + add import.
@@ -413,6 +422,7 @@ fn replace_names_ast(
     block_start: usize,
     indent_len: usize,
     rename_map: &HashMap<&str, &str>,
+    divergent_literal_offsets: &[usize],
 ) -> String {
     // For each collected node, extract its source text and check the rename map.
     // For f-string literal segments, use override_text as the lookup key.
@@ -423,6 +433,12 @@ fn replace_names_ast(
             None => &source[pos.offset..pos.offset + pos.len],
         };
         if let Some(&new_name) = rename_map.get(lookup_key) {
+            // For literal nodes (not names), only replace at positions where the
+            // literal actually diverges. This prevents replacing non-divergent
+            // literals that happen to have the same text as a divergent one.
+            if !pos.is_name && !divergent_literal_offsets.contains(&pos.offset) {
+                continue;
+            }
             let body_offset = pos.offset - block_start + indent_len;
             let replacement = match pos.kind {
                 ReplacementKind::Normal => new_name.to_string(),
@@ -463,14 +479,15 @@ struct NodeCollector {
 
 impl<'a> Visitor<'a> for NodeCollector {
     fn visit_expr(&mut self, expr: &'a Expr) {
-        let collect = matches!(
-            expr,
-            Expr::Name(_)
-                | Expr::NumberLiteral(_)
-                | Expr::StringLiteral(_)
-                | Expr::BytesLiteral(_)
-                | Expr::BooleanLiteral(_)
-        );
+        let is_name = matches!(expr, Expr::Name(_));
+        let collect = is_name
+            || matches!(
+                expr,
+                Expr::NumberLiteral(_)
+                    | Expr::StringLiteral(_)
+                    | Expr::BytesLiteral(_)
+                    | Expr::BooleanLiteral(_)
+            );
         if collect {
             let range = expr.range();
             let start = range.start().to_usize();
@@ -480,6 +497,7 @@ impl<'a> Visitor<'a> for NodeCollector {
                 len,
                 override_text: None,
                 kind: ReplacementKind::Normal,
+                is_name,
             });
         }
         // Collect FStringPart::Literal positions before walking into the f-string.
@@ -501,6 +519,7 @@ impl<'a> Visitor<'a> for NodeCollector {
                 len,
                 override_text: Some(quote_fstring_segment(&lit.value)),
                 kind: ReplacementKind::FStringSegment,
+                is_name: false,
             });
         }
         walk_interpolated_string_element(self, element);
@@ -530,6 +549,7 @@ impl NodeCollector {
             len,
             override_text: Some(quote_fstring_segment(&string_lit.value)),
             kind: ReplacementKind::FStringPartLiteral,
+            is_name: false,
         });
     }
 }
@@ -582,7 +602,8 @@ mod tests {
         rename_map.insert("a", "arg_0");
 
         // body_text == source (no prepend), block_start = 0, indent_len = 0
-        let result = replace_names_ast(source, source, &positions, 0, 0, &rename_map);
+        // Empty divergent offsets — no literals to replace in this test.
+        let result = replace_names_ast(source, source, &positions, 0, 0, &rename_map, &[]);
         // The 'a' in the string literal must NOT be replaced.
         assert_eq!(result, "arg_0 = \"hello a world\"\nb = arg_0 + 1\n");
     }
@@ -672,7 +693,21 @@ mod tests {
             parent_indent: None,
         };
 
-        let result = generate_function_def(source, &block, &positions, &sig, "compute", &scope);
+        // Mark literal "1" (at offset 4) as divergent so it gets replaced.
+        let lit_offsets: Vec<usize> = positions
+            .iter()
+            .filter(|p| !p.is_name)
+            .map(|p| p.offset)
+            .collect();
+        let result = generate_function_def(
+            source,
+            &block,
+            &positions,
+            &sig,
+            "compute",
+            &scope,
+            &lit_offsets,
+        );
         assert_eq!(
             result,
             "def compute(arg_0, arg_1):\n    arg_0 = arg_1\n    b = arg_0 + 2\n"
@@ -707,7 +742,9 @@ mod tests {
             parent_indent: None,
         };
 
-        let result = generate_function_def(source, &block, &positions, &sig, "extract", &scope);
+        // No literal divergences in this test (literal "1" is not parameterized).
+        let result =
+            generate_function_def(source, &block, &positions, &sig, "extract", &scope, &[]);
         assert_eq!(
             result,
             "def extract(arg_0):\n    ret_0 = arg_0 + 1\n    return ret_0\n"

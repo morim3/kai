@@ -140,6 +140,7 @@ fn run_multi_fixture(dir: &Path) -> Result<(), String> {
         func_name,
         &plan.scope_ctx,
         "input", // target file stem
+        &plan.divergent_literal_offsets,
     );
 
     // Check target file output.

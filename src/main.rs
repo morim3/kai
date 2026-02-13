@@ -120,6 +120,7 @@ fn main() -> Result<()> {
             func_name,
             &plan.scope_ctx,
             &target_stem,
+            &plan.divergent_literal_offsets,
         );
 
         if cli.write {

@@ -470,6 +470,7 @@ pub fn run_interactive(
         &sig,
         &func_name,
         &plan.scope_ctx,
+        &plan.divergent_literal_offsets,
     );
 
     // Final safety check: ensure generated code is valid Python.
@@ -539,6 +540,7 @@ pub fn run_interactive_multi(
         &func_name,
         &plan.scope_ctx,
         target_file_stem,
+        &plan.divergent_literal_offsets,
     );
 
     // Validate all outputs.
@@ -722,6 +724,7 @@ mod tests {
             &sig,
             func_name,
             &plan.scope_ctx,
+            &plan.divergent_literal_offsets,
         );
         assert!(
             validate_output(&result).is_ok(),
