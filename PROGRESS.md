@@ -3,9 +3,9 @@
 AIがPROGRESSを管理するためのもの。PhaseやIter内のProgressを管理するために用いる。
 
 ## Current State
-- Phase 1-5 + Iter 1-12 完了、バグ修正4件完了
-- 57 フィクスチャ PASS、既知バグ 0 件
-- fuzz test 60/60 PASS
+- Phase 1-5 + Iter 1-12 完了、バグ修正6件完了
+- 59 フィクスチャ PASS、既知バグ 0 件
+- fuzz test 106/106 PASS
 
 ## Completed
 
@@ -39,6 +39,8 @@ AST正規化+ハッシュ、類似ブロックスキャン、変数スコープ�
 | 2 | after_block スコープ境界まで収集 | `303da1d` |
 | 3 | f-string リテラルセグメントのハッシュ漏れ | `778ce27` |
 | 4 | 同値リテラルの誤パラメータ化（divergent_literal_offsets 導入） | `d65f331` |
+| 5 | 3+ブロックで divergent_literal_offsets が block0 vs block1 のみ → 全比較 union | `9e18d90` |
+| 6 | 3+ブロックで collect_literal_params が ordinal 照合 → オフセットベース照合 | `9e18d90` |
 
 ## Design Decisions
 - **Output 判定**: Module/Class → 全 store。Function → after_block で使われる store のみ
@@ -54,8 +56,15 @@ AST正規化+ハッシュ、類似ブロックスキャン、変数スコープ�
 - テキストベース識別子置換: 文字列・コメント内を誤置換 → AST ベースに置換
 - テキストベース rename_map でリテラル置換: 同値リテラルの誤置換 → position-based に修正
 
+### 処理フロー監査で発見 (2026-02-13)
+| 項目 | 内容 | 状態 |
+|------|------|------|
+| 二重パース | find_matches と plan_extraction が同じソースを2回パース | 保留（ボトルネックではない） |
+| バグ #5 | divergent_literal_offsets が first comparison のみ → union に修正 | ✅ 修正済み |
+| バグ #6 | collect_literal_params が ordinal 照合 → offset-based に修正 | ✅ 修正済み |
+
 ## Next Steps
-- docs/design_doc.md のスコープ全完了。新機能のアイデアは docs/design_doc.md を参照
+- バグ #5 (二重パース) は API 変更が大きい割にパフォーマンス効果が限定的（7行ファイルで0.8ms/回、ボトルネックはパースではなくスキャン/divergence抽出）。将来の大規模リファクタ時に対応
 
 ## Blockers
 (なし)
