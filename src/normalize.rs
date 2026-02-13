@@ -166,6 +166,8 @@ impl<'a> Visitor<'a> for NormalizeVisitor<'_> {
             Stmt::For(f) => f.is_async.hash(&mut self.hasher),
             Stmt::With(w) => w.is_async.hash(&mut self.hasher),
             Stmt::Try(t) => t.is_star.hash(&mut self.hasher),
+            Stmt::AnnAssign(a) => a.simple.hash(&mut self.hasher),
+            Stmt::ImportFrom(i) => i.level.hash(&mut self.hasher),
             _ => {}
         }
 
@@ -200,6 +202,13 @@ impl<'a> Visitor<'a> for NormalizeVisitor<'_> {
                 walk_expr(self, expr);
             }
 
+            // Tuple: hash parenthesized flag (not visited by walk_expr).
+            Expr::Tuple(t) => {
+                self.hash_tag("Tuple");
+                t.parenthesized.hash(&mut self.hasher);
+                walk_expr(self, expr);
+            }
+
             // For everything else, hash the node kind and recurse.
             _ => {
                 let tag = match expr {
@@ -225,12 +234,12 @@ impl<'a> Visitor<'a> for NormalizeVisitor<'_> {
                     Expr::Subscript(_) => "Subscript",
                     Expr::Starred(_) => "Starred",
                     Expr::List(_) => "List",
-                    Expr::Tuple(_) => "Tuple",
                     Expr::Slice(_) => "Slice",
                     Expr::IpyEscapeCommand(_) => "IpyEscapeCommand",
                     // Already handled above.
                     Expr::Name(_)
                     | Expr::Attribute(_)
+                    | Expr::Tuple(_)
                     | Expr::NumberLiteral(_)
                     | Expr::StringLiteral(_)
                     | Expr::BytesLiteral(_)
@@ -508,6 +517,21 @@ mod tests {
                 "match x:\n    case 1:\n        pass",
                 "match x:\n    case 2:\n        pass",
                 "MatchValue literal",
+            ),
+            (
+                "x: int = 1",
+                "(x): int = 1",
+                "AnnAssign simple",
+            ),
+            (
+                "x = (a, b)",
+                "x = a, b",
+                "Tuple parenthesized",
+            ),
+            (
+                "from . import x",
+                "from .. import x",
+                "ImportFrom level",
             ),
         ];
         for (a, b, label) in cases {
