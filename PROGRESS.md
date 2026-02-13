@@ -63,8 +63,17 @@ AST正規化+ハッシュ、類似ブロックスキャン、変数スコープ�
 | バグ #5 | divergent_literal_offsets が first comparison のみ → union に修正 | ✅ 修正済み |
 | バグ #6 | collect_literal_params が ordinal 照合 → offset-based に修正 | ✅ 修正済み |
 
+### コード監査で発見 (2026-02-14)
+| バグ | 内容 | 状態 |
+|------|------|------|
+| #7 | scope.rs: except `as` 変数の Store 漏れ | ✅ `8934805` |
+| #8 | scope.rs: match パターン束縛の Store 漏れ | ✅ `8934805` |
+| #9 | rewrite.rs: 末尾改行なしファイルで import 挿入位置が範囲外 | ✅ `8934805` |
+
 ## Next Steps
-- バグ #5 (二重パース) は API 変更が大きい割にパフォーマンス効果が限定的（7行ファイルで0.8ms/回、ボトルネックはパースではなくスキャン/divergence抽出）。将来の大規模リファクタ時に対応
+- diff_extract.rs: except handler `name` の差分未抽出（影響: except 変数名が異なるブロック間でパラメータ化されない）
+- diff_extract.rs: f-string `conversion` フィールド (`!r`,`!s`,`!a`) 未比較（影響: conversion が異なるブロックで bail!）
+- 二重パース: API 変更が大きい割にボトルネックではない。将来対応
 
 ## Blockers
 (なし)
