@@ -257,7 +257,9 @@ fn find_import_insert_point(source: &str) -> usize {
         let trimmed = line.trim();
 
         if trimmed.starts_with("import ") || trimmed.starts_with("from ") {
-            last_import_end = Some(offset + line.len() + 1); // +1 for newline
+            let line_end = offset + line.len();
+            // Point past the newline if one exists, otherwise to end of file.
+            last_import_end = Some(if line_end < source.len() { line_end + 1 } else { line_end });
         } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
             // Stop at first non-import, non-comment, non-blank line
             if last_import_end.is_some() {
@@ -275,7 +277,9 @@ fn line_offsets(source: &str) -> Vec<(usize, &str)> {
     let mut offset = 0;
     for line in source.lines() {
         result.push((offset, line));
-        offset += line.len() + 1; // +1 for newline
+        let line_end = offset + line.len();
+        // Only add +1 for newline if one actually exists at this position.
+        offset = if line_end < source.len() { line_end + 1 } else { line_end };
     }
     result
 }

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use ruff_python_ast::visitor::{Visitor, walk_expr, walk_stmt};
-use ruff_python_ast::{Expr, ExprContext, Stmt};
+use ruff_python_ast::visitor::{Visitor, walk_expr, walk_pattern, walk_stmt};
+use ruff_python_ast::{Expr, ExprContext, Pattern, Stmt};
 use ruff_python_stdlib::builtins::is_python_builtin;
 use rustc_hash::FxHashSet;
 
@@ -487,8 +487,56 @@ impl<'a> Visitor<'a> for VarCollector {
             } else {
                 self.visit_expr(&aug.target);
             }
+        } else if let Stmt::Try(try_stmt) = stmt {
+            // Exception handlers have a `name` field (e.g., `except E as name`)
+            // that binds the exception to a variable. This is a Store, not visited
+            // by the default walker.
+            for stmt in &try_stmt.body {
+                self.visit_stmt(stmt);
+            }
+            for handler in &try_stmt.handlers {
+                let ruff_python_ast::ExceptHandler::ExceptHandler(h) = handler;
+                if let Some(ref typ) = h.type_ {
+                    self.visit_expr(typ);
+                }
+                // The `name` field is an Identifier bound in the handler scope (Store).
+                if let Some(ref name) = h.name {
+                    self.events.push((name.to_string(), VarAction::Store));
+                }
+                for stmt in &h.body {
+                    self.visit_stmt(stmt);
+                }
+            }
+            for stmt in &try_stmt.orelse {
+                self.visit_stmt(stmt);
+            }
+            for stmt in &try_stmt.finalbody {
+                self.visit_stmt(stmt);
+            }
         } else {
             walk_stmt(self, stmt);
+        }
+    }
+
+    fn visit_pattern(&mut self, pattern: &'a Pattern) {
+        // Match patterns bind variables (Store context).
+        // MatchAs with a name creates a binding.
+        match pattern {
+            Pattern::MatchAs(m) => {
+                // MatchAs can have a pattern and/or a name.
+                // If it has a pattern, visit it recursively.
+                if let Some(ref pat) = m.pattern {
+                    self.visit_pattern(pat);
+                }
+                // If it has a name, it's a binding (Store).
+                if let Some(ref name) = m.name {
+                    self.events.push((name.to_string(), VarAction::Store));
+                }
+            }
+            _ => {
+                // For other pattern types, use the default walker to visit sub-patterns.
+                walk_pattern(self, pattern);
+            }
         }
     }
 }
@@ -727,5 +775,105 @@ mod tests {
         let block = parse_stmts("a = 1\nb = a + 2\nc = b * 3");
         let stores = block_stores(&block);
         assert_eq!(stores, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn walrus_operator_named_expr() {
+        // `if (x := 10) > 5: y = x + 1` — walrus operator stores x, then loads it.
+        let block = parse_stmts("if (x := 10) > 5:\n    y = x + 1");
+        let iface = analyze_block(&block, &[], false);
+        // x is stored by walrus operator before being loaded in y = x + 1
+        assert_eq!(iface.inputs, Vec::<String>::new(), "x should be stored before any load");
+    }
+
+    #[test]
+    fn aug_assign_on_attribute() {
+        // `obj.attr += 1` — obj is loaded (and its attribute is both loaded and stored).
+        let block = parse_stmts("obj.attr += 1");
+        let iface = analyze_block(&block, &[], false);
+        // obj is loaded to access the attribute
+        assert_eq!(iface.inputs, vec!["obj"]);
+    }
+
+    #[test]
+    fn aug_assign_on_subscript() {
+        // `lst[0] += 1` — lst is loaded (and its element is both loaded and stored).
+        let block = parse_stmts("lst[0] += 1");
+        let iface = analyze_block(&block, &[], false);
+        assert_eq!(iface.inputs, vec!["lst"]);
+    }
+
+    #[test]
+    fn test_exception_is_builtin() {
+        assert!(is_builtin("Exception"), "Exception should be a builtin");
+        assert!(is_builtin("ValueError"));
+        assert!(!is_builtin("MyCustomError"));
+    }
+
+    #[test]
+    fn exception_handler_as_clause() {
+        // `try: ... except E as e: ...` — e is stored in the except block.
+        // Exception is a builtin, so it's not an input.
+        let block = parse_stmts("try:\n    risky()\nexcept Exception as e:\n    handle(e)");
+        let iface = analyze_block(&block, &[], false);
+        assert_eq!(iface.inputs, vec!["risky", "handle"]);
+
+        // Test with a non-builtin exception type
+        let block2 = parse_stmts("try:\n    risky()\nexcept MyError as e:\n    handle(e)");
+        let iface2 = analyze_block(&block2, &[], false);
+        assert_eq!(iface2.inputs, vec!["risky", "MyError", "handle"]);
+    }
+
+    #[test]
+    fn with_statement_as_clause() {
+        // `with open('file') as f: read(f)` — f is stored by with statement.
+        // open is a builtin, so it's not an input.
+        let block = parse_stmts("with open('file') as f:\n    read(f)");
+        let after = parse_stmts("print(f)");
+        let iface = analyze_block(&block, &after, false);
+        assert_eq!(iface.inputs, vec!["read"]);
+        assert_eq!(iface.outputs, vec!["f"]);
+    }
+
+    #[test]
+    fn nested_comprehension() {
+        // `[[y for y in row] for row in matrix]` — neither y nor row leak.
+        let block = parse_stmts("result = [[y for y in row] for row in matrix]");
+        let iface = analyze_block(&block, &[], false);
+        assert_eq!(iface.inputs, vec!["matrix"]);
+    }
+
+    #[test]
+    fn walrus_in_comprehension_iter() {
+        // `[x for x in (data := get_data())]` — data is stored in outer scope,
+        // x is scoped to comprehension.
+        let block = parse_stmts("result = [x for x in (data := get_data())]");
+        let after = parse_stmts("print(data, result)");
+        let iface = analyze_block(&block, &after, false);
+        assert_eq!(iface.inputs, vec!["get_data"]);
+        assert_eq!(iface.outputs, vec!["data", "result"]);
+    }
+
+    #[test]
+    fn match_statement_with_capture() {
+        // `match x: case (a, b): ...` — a and b are stored in the case body.
+        let block = parse_stmts("match point:\n    case (x, y):\n        result = x + y");
+        let after = parse_stmts("print(result)");
+        let iface = analyze_block(&block, &after, false);
+        assert_eq!(iface.inputs, vec!["point"]);
+        assert_eq!(iface.outputs, vec!["result"]);
+    }
+
+    #[test]
+    fn comprehension_does_not_leak_target() {
+        // `[x for x in items]` — x should not leak to outer scope.
+        let block = parse_stmts("result = [x for x in items]");
+        let after = parse_stmts("use(x)");
+        let iface = analyze_block(&block, &after, false);
+        // items is input (loaded by comprehension).
+        // x from comprehension should not leak (not stored in outer scope).
+        // result is stored but not used in after_block.
+        assert_eq!(iface.inputs, vec!["items"]);
+        assert_eq!(iface.outputs, Vec::<String>::new());
     }
 }
