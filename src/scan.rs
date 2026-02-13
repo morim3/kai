@@ -241,6 +241,83 @@ pub fn find_body_for_block<'a>(
     body
 }
 
+/// Find the Python scope body (Function/Class/Module) containing a given byte offset.
+///
+/// Unlike `find_body_for_block`, this returns the scope body rather than the
+/// innermost control flow body. Python control flow (for/if/while/with/try)
+/// does not create new scopes, so variable liveness must be checked at the
+/// scope boundary.
+pub fn find_scope_body_for_block<'a>(
+    top_body: &'a [Stmt],
+    source: &str,
+    block_start_offset: usize,
+) -> &'a [Stmt] {
+    let line = line_of_offset(source, block_start_offset);
+    let info = find_scopes(top_body, source, line, line);
+    info.scope_body
+}
+
+/// Collect all statements that come after a block, up to the Python scope boundary.
+///
+/// Python control flow (for/if/while/with/try) does not create variable scopes.
+/// When a block is nested inside control flow, variables stored in the block may
+/// be used outside that control flow structure. This function recursively descends
+/// through control flow bodies to find the block, then collects all statements
+/// that execute after it at each nesting level.
+///
+/// Example: if a block is inside a `for` loop body, this returns:
+/// - Statements after the block within the `for` body
+/// - Statements after the `for` loop in the enclosing scope
+/// - (and so on, up to the scope boundary)
+pub fn collect_after_stmts(
+    scope_body: &[Stmt],
+    block_start_offset: usize,
+    window_size: usize,
+) -> Vec<&Stmt> {
+    let mut result = Vec::new();
+    collect_after_inner(scope_body, block_start_offset, window_size, &mut result);
+    result
+}
+
+/// Recursive helper for `collect_after_stmts`.
+/// Returns `true` if the block was found in this body.
+fn collect_after_inner<'a>(
+    body: &'a [Stmt],
+    block_start_offset: usize,
+    window_size: usize,
+    result: &mut Vec<&'a Stmt>,
+) -> bool {
+    for (i, stmt) in body.iter().enumerate() {
+        let stmt_start = stmt.range().start().to_usize();
+        let stmt_end = stmt.range().end().to_usize();
+
+        // Direct match: block starts at this statement.
+        if stmt_start == block_start_offset {
+            // Add all statements after the block window.
+            let after_start = i + window_size;
+            for after_stmt in body.iter().skip(after_start) {
+                result.push(after_stmt);
+            }
+            return true;
+        }
+
+        // Block is nested inside this statement (control flow).
+        if stmt_start < block_start_offset && block_start_offset < stmt_end {
+            for sub_body in control_flow_bodies(stmt) {
+                if collect_after_inner(sub_body, block_start_offset, window_size, result) {
+                    // Block found inside this control flow body.
+                    // Add all statements after this control flow statement.
+                    for after_stmt in body.iter().skip(i + 1) {
+                        result.push(after_stmt);
+                    }
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Determine the appropriate scope context based on where all matched blocks reside.
 ///
 /// If all matches are within the same scope, returns the innermost scope context.

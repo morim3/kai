@@ -179,8 +179,12 @@ pub fn plan_extraction_multi(
         target_stmts.len()
     };
 
-    // For each block, find its body and after_block from its own file's AST.
-    let mut sig_inputs: Vec<(&[ruff_python_ast::Stmt], &[ruff_python_ast::Stmt])> = Vec::new();
+    // For each block, find its body and collect after-block statements up to scope boundary.
+    // Python control flow (for/if/while/with/try) does not create scopes, so we must
+    // collect statements after the block at every nesting level up to the enclosing
+    // Function/Class/Module scope.
+    let mut block_slices: Vec<&[ruff_python_ast::Stmt]> = Vec::new();
+    let mut after_stmts_per_block: Vec<Vec<&ruff_python_ast::Stmt>> = Vec::new();
     for sourced in blocks {
         let src = sources[sourced.source_index];
         let body_stmts = &parsed[sourced.source_index].body;
@@ -189,15 +193,23 @@ pub fn plan_extraction_multi(
             .iter()
             .position(|s| s.range().start().to_usize() == sourced.block.start_offset)
             .context("block offset does not match any statement")?;
-        let after_start = idx + window_size;
         let block_slice = &body[idx..idx + window_size];
-        let after_slice = if after_start < body.len() {
-            &body[after_start..]
-        } else {
-            &[]
-        };
-        sig_inputs.push((block_slice, after_slice));
+        block_slices.push(block_slice);
+
+        // Collect after-block statements up to the scope boundary.
+        let scope_body =
+            scan::find_scope_body_for_block(body_stmts, src, sourced.block.start_offset);
+        let after_stmts =
+            scan::collect_after_stmts(scope_body, sourced.block.start_offset, window_size);
+        after_stmts_per_block.push(after_stmts);
     }
+
+    // Build sig_inputs by combining block slices with after-statement references.
+    let sig_inputs: Vec<(&[ruff_python_ast::Stmt], &[&ruff_python_ast::Stmt])> = block_slices
+        .iter()
+        .zip(after_stmts_per_block.iter())
+        .map(|(block, after)| (*block, after.as_slice()))
+        .collect();
 
     // Safety check: verify block 0 can be extracted into a function.
     if let Err(unsafe_nodes) = safety::check_extractable(sig_inputs[0].0) {

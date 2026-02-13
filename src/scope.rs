@@ -77,6 +77,41 @@ pub fn analyze_block(
     BlockInterface { inputs, outputs }
 }
 
+/// Analyze a block with after-block statements provided as references.
+///
+/// This variant accepts `&[&Stmt]` instead of `&[Stmt]`, which is needed when
+/// after-block statements are collected from multiple nesting levels (e.g.,
+/// statements after control flow structures up to the scope boundary).
+pub fn analyze_block_refs(
+    block: &[Stmt],
+    after_block: &[&Stmt],
+    all_stores_as_outputs: bool,
+) -> BlockInterface {
+    let mut collector = VarCollector::new();
+    for stmt in block {
+        collector.visit_stmt(stmt);
+    }
+
+    let inputs = collector.inputs();
+
+    let outputs = if all_stores_as_outputs {
+        collector.stores()
+    } else {
+        let mut after_collector = VarCollector::new();
+        for stmt in after_block {
+            after_collector.visit_stmt(stmt);
+        }
+        let after_inputs = after_collector.inputs();
+        collector
+            .stores()
+            .into_iter()
+            .filter(|name| after_inputs.contains(name))
+            .collect()
+    };
+
+    BlockInterface { inputs, outputs }
+}
+
 /// Get all variables that are stored (assigned) within a block, in order of first store.
 ///
 /// Used by the interactive mode to offer additional return value candidates.
@@ -171,13 +206,13 @@ fn collect_literal_params(all_divergences: &[Vec<Divergence>]) -> Vec<Vec<String
 /// `divergences` contains the structural differences between each block and block 0.
 /// `all_stores_as_outputs`: when true, all stored variables become outputs (for class scope).
 pub fn unify_signatures(
-    blocks: &[(&[Stmt], &[Stmt])],
+    blocks: &[(&[Stmt], &[&Stmt])],
     all_divergences: &[Vec<Divergence>],
     all_stores_as_outputs: bool,
 ) -> FunctionSignature {
     let interfaces: Vec<BlockInterface> = blocks
         .iter()
-        .map(|(block, after)| analyze_block(block, after, all_stores_as_outputs))
+        .map(|(block, after)| analyze_block_refs(block, after, all_stores_as_outputs))
         .collect();
 
     // All blocks should have the same number of inputs/outputs (structurally identical).
@@ -515,10 +550,12 @@ mod tests {
         let divs =
             crate::diff_extract::extract_divergences(&block_a, &block_b, src_a, src_b).unwrap();
 
+        let after_a_refs: Vec<&Stmt> = after_a.iter().collect();
+        let after_b_refs: Vec<&Stmt> = after_b.iter().collect();
         let sig = unify_signatures(
             &[
-                (block_a.as_slice(), after_a.as_slice()),
-                (block_b.as_slice(), after_b.as_slice()),
+                (block_a.as_slice(), &after_a_refs),
+                (block_b.as_slice(), &after_b_refs),
             ],
             &[divs],
             false,
@@ -559,11 +596,12 @@ mod tests {
         let divs_ac =
             crate::diff_extract::extract_divergences(&block_a, &block_c, src_a, src_c).unwrap();
 
+        let empty_refs: Vec<&Stmt> = Vec::new();
         let sig = unify_signatures(
             &[
-                (block_a.as_slice(), &[]),
-                (block_b.as_slice(), &[]),
-                (block_c.as_slice(), &[]),
+                (block_a.as_slice(), &empty_refs),
+                (block_b.as_slice(), &empty_refs),
+                (block_c.as_slice(), &empty_refs),
             ],
             &[divs_ab, divs_ac],
             false,
