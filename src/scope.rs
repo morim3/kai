@@ -150,39 +150,66 @@ impl FunctionSignature {
 /// Collect literal divergences across all blocks into a table of per-parameter values.
 ///
 /// `all_divergences[i]` contains divergences between block 0 and block `i+1`.
+/// `all_lit_offsets[i]` contains the byte offsets (in block 0) of literal divergences
+/// for comparison `i`, in AST traversal order matching the Literal entries in
+/// `all_divergences[i]`.
+///
 /// Returns a `Vec<Vec<String>>` where `result[param_idx][block_idx]` is the literal
 /// value for that parameter in that block.
-fn collect_literal_params(all_divergences: &[Vec<Divergence>]) -> Vec<Vec<String>> {
-    let Some(first_divs) = all_divergences.first() else {
+fn collect_literal_params(
+    all_divergences: &[Vec<Divergence>],
+    all_lit_offsets: &[Vec<usize>],
+) -> Vec<Vec<String>> {
+    if all_divergences.is_empty() {
         return Vec::new();
-    };
+    }
 
-    let mut params: Vec<Vec<String>> = Vec::new();
+    // Build the union of all divergent literal offsets (sorted, deduplicated).
+    let mut all_offsets: Vec<usize> = all_lit_offsets.iter().flat_map(|v| v.iter().copied()).collect();
+    all_offsets.sort_unstable();
+    all_offsets.dedup();
 
-    for div in first_divs {
-        if let Divergence::Literal(val_0, val_1) = div {
-            let num_blocks = all_divergences.len() + 1; // +1 for block 0 itself
-            let mut per_block = Vec::with_capacity(num_blocks);
-            per_block.push(val_0.clone()); // block 0
-            per_block.push(val_1.clone()); // block 1
+    let num_blocks = all_divergences.len() + 1; // +1 for block 0
+    let mut params: Vec<Vec<String>> = Vec::with_capacity(all_offsets.len());
 
-            // For blocks 2..N, find the matching literal divergence by ordinal position.
-            let current_lit_idx = params.len();
-            for other_divs in all_divergences.iter().skip(1) {
-                let value = other_divs
-                    .iter()
-                    .filter_map(|od| match od {
-                        Divergence::Literal(_, v) => Some(v),
-                        Divergence::Name(..) => None,
+    for &target_offset in &all_offsets {
+        let mut per_block = Vec::with_capacity(num_blocks);
+
+        // Block 0's value: find any comparison that has this offset and use its val_0.
+        let val_0 = all_lit_offsets
+            .iter()
+            .zip(all_divergences.iter())
+            .find_map(|(offsets, divs)| {
+                let lit_idx = offsets.iter().position(|&o| o == target_offset)?;
+                let lit_div = divs.iter().filter_map(|d| match d {
+                    Divergence::Literal(v0, _) => Some(v0),
+                    _ => None,
+                }).nth(lit_idx);
+                lit_div.cloned()
+            })
+            .expect("offset must exist in at least one comparison");
+        per_block.push(val_0.clone());
+
+        // Block i+1's value: look up from comparison i by offset.
+        for (offsets, divs) in all_lit_offsets.iter().zip(all_divergences.iter()) {
+            let value = if let Some(lit_idx) = offsets.iter().position(|&o| o == target_offset) {
+                divs.iter()
+                    .filter_map(|d| match d {
+                        Divergence::Literal(_, v1) => Some(v1),
+                        _ => None,
                     })
-                    .nth(current_lit_idx)
+                    .nth(lit_idx)
                     .cloned()
-                    .unwrap_or_else(|| val_0.clone()); // fallback: reuse block 0's value
-                per_block.push(value);
-            }
-
-            params.push(per_block);
+                    .unwrap_or_else(|| val_0.clone())
+            } else {
+                // This comparison didn't have a divergence at this offset,
+                // meaning the literal was the same as block 0.
+                val_0.clone()
+            };
+            per_block.push(value);
         }
+
+        params.push(per_block);
     }
 
     params
@@ -197,6 +224,7 @@ fn collect_literal_params(all_divergences: &[Vec<Divergence>]) -> Vec<Vec<String
 pub fn unify_signatures(
     blocks: &[(&[Stmt], &[&Stmt])],
     all_divergences: &[Vec<Divergence>],
+    all_lit_offsets: &[Vec<usize>],
     all_stores_as_outputs: bool,
 ) -> FunctionSignature {
     let interfaces: Vec<BlockInterface> = blocks
@@ -207,7 +235,7 @@ pub fn unify_signatures(
     // All blocks should have the same number of inputs/outputs (structurally identical).
     let param_count = interfaces.first().map_or(0, |i| i.inputs.len());
 
-    let literal_param_values = collect_literal_params(all_divergences);
+    let literal_param_values = collect_literal_params(all_divergences, all_lit_offsets);
 
     let lit_count = literal_param_values.len();
     let total_params = param_count + lit_count;
@@ -540,9 +568,8 @@ mod tests {
 
         let src_a = "c = a + b";
         let src_b = "z = x + y";
-        let divs = crate::diff_extract::extract_divergences(&block_a, &block_b, src_a, src_b)
-            .unwrap()
-            .0;
+        let (divs, lit_offsets) =
+            crate::diff_extract::extract_divergences(&block_a, &block_b, src_a, src_b).unwrap();
 
         let after_a_refs: Vec<&Stmt> = after_a.iter().collect();
         let after_b_refs: Vec<&Stmt> = after_b.iter().collect();
@@ -552,6 +579,7 @@ mod tests {
                 (block_b.as_slice(), &after_b_refs),
             ],
             &[divs],
+            &[lit_offsets],
             false,
         );
 
@@ -563,14 +591,14 @@ mod tests {
 
     #[test]
     fn collect_literal_params_empty() {
-        let result = collect_literal_params(&[]);
+        let result = collect_literal_params(&[], &[]);
         assert!(result.is_empty());
     }
 
     #[test]
     fn collect_literal_params_no_literals() {
         let divs = vec![vec![Divergence::Name("a".into(), "b".into())]];
-        let result = collect_literal_params(&divs);
+        let result = collect_literal_params(&divs, &[vec![]]);
         assert!(result.is_empty());
     }
 
@@ -585,12 +613,10 @@ mod tests {
         let block_c = parse_stmts(src_c);
 
         // Divergences: block_a vs block_b, block_a vs block_c
-        let divs_ab = crate::diff_extract::extract_divergences(&block_a, &block_b, src_a, src_b)
-            .unwrap()
-            .0;
-        let divs_ac = crate::diff_extract::extract_divergences(&block_a, &block_c, src_a, src_c)
-            .unwrap()
-            .0;
+        let (divs_ab, lits_ab) =
+            crate::diff_extract::extract_divergences(&block_a, &block_b, src_a, src_b).unwrap();
+        let (divs_ac, lits_ac) =
+            crate::diff_extract::extract_divergences(&block_a, &block_c, src_a, src_c).unwrap();
 
         let empty_refs: Vec<&Stmt> = Vec::new();
         let sig = unify_signatures(
@@ -600,6 +626,7 @@ mod tests {
                 (block_c.as_slice(), &empty_refs),
             ],
             &[divs_ab, divs_ac],
+            &[lits_ab, lits_ac],
             false,
         );
 

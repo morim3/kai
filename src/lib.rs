@@ -222,6 +222,7 @@ pub fn plan_extraction_multi(
     // Extract divergences between block 0 and each other block.
     let ref_block = sig_inputs[0].0;
     let mut all_divs = Vec::new();
+    let mut all_lit_offsets: Vec<Vec<usize>> = Vec::new();
     let mut divergent_literal_offsets = Vec::new();
 
     for (i, (other_block, _)) in sig_inputs.iter().enumerate().skip(1) {
@@ -232,10 +233,13 @@ pub fn plan_extraction_multi(
             sources[blocks[i].source_index],
         )?;
 
-        // Use the first comparison's literal offsets (block 0 vs block 1).
-        if i == 1 {
-            divergent_literal_offsets = lit_offsets;
+        // Union all literal offsets across comparisons (bug #6 fix).
+        for &off in &lit_offsets {
+            if !divergent_literal_offsets.contains(&off) {
+                divergent_literal_offsets.push(off);
+            }
         }
+        all_lit_offsets.push(lit_offsets);
         all_divs.push(divs);
     }
 
@@ -243,7 +247,7 @@ pub fn plan_extraction_multi(
     // Use the target block's own scope (not placement scope) to decide this.
     let all_stores_as_outputs =
         target_block_scope.kind == ScopeKind::Class || target_block_scope.kind == ScopeKind::Module;
-    let sig = scope::unify_signatures(&sig_inputs, &all_divs, all_stores_as_outputs);
+    let sig = scope::unify_signatures(&sig_inputs, &all_divs, &all_lit_offsets, all_stores_as_outputs);
 
     // Collect AST node positions and block stores for the plan.
     let ref_node_positions = rewrite::collect_node_positions(ref_block);
