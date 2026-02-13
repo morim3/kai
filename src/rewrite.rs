@@ -252,18 +252,20 @@ pub fn generate_import(module_stem: &str, func_name: &str) -> String {
 /// or at offset 0 if none exist.
 fn find_import_insert_point(source: &str) -> usize {
     let mut last_import_end = None;
+
     for (offset, line) in line_offsets(source) {
         let trimmed = line.trim();
+
         if trimmed.starts_with("import ") || trimmed.starts_with("from ") {
             last_import_end = Some(offset + line.len() + 1); // +1 for newline
         } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
             // Stop at first non-import, non-comment, non-blank line
-            // (but only if we've seen at least one import or if this is code)
             if last_import_end.is_some() {
                 break;
             }
         }
     }
+
     last_import_end.unwrap_or(0)
 }
 
@@ -311,8 +313,8 @@ pub fn apply_refactoring_multi(
     for (file_idx, file_blocks) in per_file.iter().enumerate() {
         let source = sources[file_idx];
 
+        // Guard: No matches in this file — return unchanged.
         if file_blocks.is_empty() {
-            // No matches in this file — return unchanged.
             results.push(source.to_string());
             continue;
         }
@@ -424,29 +426,31 @@ fn replace_names_ast(
     rename_map: &HashMap<&str, &str>,
     divergent_literal_offsets: &[usize],
 ) -> String {
-    // For each collected node, extract its source text and check the rename map.
-    // For f-string literal segments, use override_text as the lookup key.
     let mut replacements: Vec<(usize, usize, String)> = Vec::new();
+
     for pos in node_positions {
         let lookup_key = match &pos.override_text {
             Some(text) => text.as_str(),
             None => &source[pos.offset..pos.offset + pos.len],
         };
-        if let Some(&new_name) = rename_map.get(lookup_key) {
-            // For literal nodes (not names), only replace at positions where the
-            // literal actually diverges. This prevents replacing non-divergent
-            // literals that happen to have the same text as a divergent one.
-            if !pos.is_name && !divergent_literal_offsets.contains(&pos.offset) {
-                continue;
-            }
-            let body_offset = pos.offset - block_start + indent_len;
-            let replacement = match pos.kind {
-                ReplacementKind::Normal => new_name.to_string(),
-                ReplacementKind::FStringSegment => format!("{{{new_name}}}"),
-                ReplacementKind::FStringPartLiteral => format!("f\"{{{new_name}}}\""),
-            };
-            replacements.push((body_offset, pos.len, replacement));
+
+        let Some(&new_name) = rename_map.get(lookup_key) else {
+            continue;
+        };
+
+        // Guard: For literal nodes, only replace at divergent positions to avoid
+        // replacing non-divergent literals with the same text.
+        if !pos.is_name && !divergent_literal_offsets.contains(&pos.offset) {
+            continue;
         }
+
+        let body_offset = pos.offset - block_start + indent_len;
+        let replacement = match pos.kind {
+            ReplacementKind::Normal => new_name.to_string(),
+            ReplacementKind::FStringSegment => format!("{{{new_name}}}"),
+            ReplacementKind::FStringPartLiteral => format!("f\"{{{new_name}}}\""),
+        };
+        replacements.push((body_offset, pos.len, replacement));
     }
 
     // Sort descending by offset so replacements don't invalidate each other.
@@ -487,15 +491,15 @@ struct NodeCollector {
 impl<'a> Visitor<'a> for NodeCollector {
     fn visit_expr(&mut self, expr: &'a Expr) {
         let is_name = matches!(expr, Expr::Name(_));
-        let collect = is_name
-            || matches!(
-                expr,
-                Expr::NumberLiteral(_)
-                    | Expr::StringLiteral(_)
-                    | Expr::BytesLiteral(_)
-                    | Expr::BooleanLiteral(_)
-            );
-        if collect {
+        let is_literal = matches!(
+            expr,
+            Expr::NumberLiteral(_)
+                | Expr::StringLiteral(_)
+                | Expr::BytesLiteral(_)
+                | Expr::BooleanLiteral(_)
+        );
+
+        if is_name || is_literal {
             let (start, len) = range_offsets(expr);
             self.positions.push(NodePosition {
                 offset: start,
@@ -505,26 +509,30 @@ impl<'a> Visitor<'a> for NodeCollector {
                 is_name,
             });
         }
-        // Collect FStringPart::Literal positions before walking into the f-string.
-        // These are StringLiteral nodes in concatenated f-strings (e.g., `" world"`
-        // in `f"hello" " world" f" {x}"`), distinct from InterpolatedStringElement::Literal.
+
+        // Collect FStringPart::Literal positions before walking into f-string.
         if let Expr::FString(fstring) = expr {
             self.collect_fstring_part_literals(&fstring.value);
         }
+
         walk_expr(self, expr);
     }
 
     fn visit_interpolated_string_element(&mut self, element: &'a InterpolatedStringElement) {
-        if let InterpolatedStringElement::Literal(lit) = element {
-            let (start, len) = range_offsets(lit);
-            self.positions.push(NodePosition {
-                offset: start,
-                len,
-                override_text: Some(quote_fstring_segment(&lit.value)),
-                kind: ReplacementKind::FStringSegment,
-                is_name: false,
-            });
-        }
+        let InterpolatedStringElement::Literal(lit) = element else {
+            walk_interpolated_string_element(self, element);
+            return;
+        };
+
+        let (start, len) = range_offsets(lit);
+        self.positions.push(NodePosition {
+            offset: start,
+            len,
+            override_text: Some(quote_fstring_segment(&lit.value)),
+            kind: ReplacementKind::FStringSegment,
+            is_name: false,
+        });
+
         walk_interpolated_string_element(self, element);
     }
 }

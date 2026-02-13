@@ -28,7 +28,6 @@ pub fn hash_stmt_refs(stmts: &[&Stmt], source: &str) -> u64 {
     hash_stmt_iter(stmts.iter().copied(), source)
 }
 
-
 /// Select statements whose line range overlaps with the given 1-based line range.
 pub fn select_stmts<'a>(
     source: &str,
@@ -85,6 +84,9 @@ macro_rules! hash_enum_tag {
         $self.hash_tag(tag);
     }};
 }
+
+/// Normalized token for all literal types (numbers, strings, booleans, None, ellipsis).
+const LITERAL_TOKEN: &str = "CONSTANT";
 
 impl<'s> NormalizeVisitor<'s> {
     fn new(source: &'s str) -> Self {
@@ -156,6 +158,7 @@ impl<'a> Visitor<'a> for NormalizeVisitor<'_> {
             Stmt::IpyEscapeCommand(_) => "IpyEscapeCommand",
         };
         self.hash_tag(tag);
+
         // Hash non-Expr fields that walk_stmt doesn't visit.
         match stmt {
             Stmt::For(f) => f.is_async.hash(&mut self.hasher),
@@ -163,6 +166,7 @@ impl<'a> Visitor<'a> for NormalizeVisitor<'_> {
             Stmt::Try(t) => t.is_star.hash(&mut self.hasher),
             _ => {}
         }
+
         walk_stmt(self, stmt);
     }
 
@@ -171,20 +175,20 @@ impl<'a> Visitor<'a> for NormalizeVisitor<'_> {
             // Variable names: normalize to positional IDs.
             Expr::Name(name) => {
                 self.hash_tag("Name");
-                let id = self.var_id(&name.id);
-                self.hash_usize(id);
+                let var_id = self.var_id(&name.id);
+                self.hash_usize(var_id);
                 // Hash context (Load/Store/Del) so that `x = ...` and `... = x` differ.
                 self.visit_expr_context(&name.ctx);
             }
 
-            // All literals: hash as a single CONSTANT token.
+            // All literals: hash as a single normalized token.
             Expr::NumberLiteral(_)
             | Expr::StringLiteral(_)
             | Expr::BytesLiteral(_)
             | Expr::BooleanLiteral(_)
             | Expr::NoneLiteral(_)
             | Expr::EllipsisLiteral(_) => {
-                self.hash_tag("CONSTANT");
+                self.hash_tag(LITERAL_TOKEN);
             }
 
             // Attribute: hash the .attr Identifier (not visited by walk_expr).
@@ -262,12 +266,16 @@ impl<'a> Visitor<'a> for NormalizeVisitor<'_> {
                 self.hash_tag("MatchValue");
                 self.hash_source_range(&*mv.value);
             }
+
             // MatchMapping keys: same issue — keys must be literals or dotted names.
             Pattern::MatchMapping(mm) => {
                 self.hash_tag("MatchMapping");
+
+                // Hash all keys (must be literals or dotted names).
                 for key in &mm.keys {
                     self.hash_source_range(key);
                 }
+
                 // Walk the rest (value patterns, rest name) normally.
                 for pat in &mm.patterns {
                     self.visit_pattern(pat);
@@ -276,6 +284,7 @@ impl<'a> Visitor<'a> for NormalizeVisitor<'_> {
                     self.hash_tag(rest.as_str());
                 }
             }
+
             _ => {
                 walk_pattern(self, pattern);
             }

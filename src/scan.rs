@@ -109,7 +109,6 @@ fn find_scopes_inner<'a>(
         }
     }
 
-    // Base case: target is directly in this body.
     let ctx = make_scope_context(
         scope_body,
         source,
@@ -124,12 +123,8 @@ fn find_scopes_inner<'a>(
     }
 }
 
-/// Info about a child scope: `(body, kind, class_def_offset, parent_indent)`.
 type ChildScopeInfo<'a> = (&'a [Stmt], ScopeKind, Option<usize>, Option<String>);
 
-/// Extract child scope info from a scope-creating statement (FunctionDef/ClassDef).
-///
-/// Returns scope info if the statement creates a new Python scope, or `None` otherwise.
 fn child_scope_info<'a>(
     stmt: &'a Stmt,
     source: &str,
@@ -142,15 +137,22 @@ fn child_scope_info<'a>(
             let parent_indent = enclosing_body
                 .first()
                 .map(|s| indent_at_offset(source, s.range().start().to_usize()));
-            Some((c.body.as_slice(), ScopeKind::Class, Some(offset), parent_indent))
+            Some((
+                c.body.as_slice(),
+                ScopeKind::Class,
+                Some(offset),
+                parent_indent,
+            ))
         }
         _ => None,
     }
 }
 
-/// Collect sub-bodies from control flow statements (not scope-creating statements).
-fn control_flow_bodies(stmt: &Stmt) -> Vec<&[Stmt]> {
+/// Extract all child statement bodies from a statement (both scope-creating and control flow).
+fn all_statement_bodies(stmt: &Stmt) -> Vec<&[Stmt]> {
     match stmt {
+        Stmt::FunctionDef(f) => vec![f.body.as_slice()],
+        Stmt::ClassDef(c) => vec![c.body.as_slice()],
         Stmt::If(s) => {
             let mut bodies: Vec<&[Stmt]> = vec![&s.body];
             for clause in &s.elif_else_clauses {
@@ -173,6 +175,14 @@ fn control_flow_bodies(stmt: &Stmt) -> Vec<&[Stmt]> {
         }
         Stmt::Match(s) => s.cases.iter().map(|c| c.body.as_slice()).collect(),
         _ => vec![],
+    }
+}
+
+/// Collect sub-bodies from control flow statements (not scope-creating statements).
+fn control_flow_bodies(stmt: &Stmt) -> Vec<&[Stmt]> {
+    match stmt {
+        Stmt::FunctionDef(_) | Stmt::ClassDef(_) => vec![],
+        _ => all_statement_bodies(stmt),
     }
 }
 
@@ -364,7 +374,7 @@ fn find_common_scope(
             }
         }
     }
-    // No single child scope contains all matches — this is the LCA.
+
     make_scope_context(body, source, kind, class_def_offset, parent_indent)
 }
 
@@ -460,47 +470,15 @@ fn scan_all_bodies_recursive(
     window_size: usize,
     matches: &mut Vec<MatchedBlock>,
 ) {
-    // Scan this body.
     matches.extend(scan_body_with_hash(source, body, target_hash, window_size));
 
-    // Recurse into child scopes and control flow bodies.
     for stmt in body {
         let recurse = |b: &[Stmt], m: &mut Vec<MatchedBlock>| {
             scan_all_bodies_recursive(source, b, target_hash, window_size, m);
         };
-        match stmt {
-            Stmt::FunctionDef(f) => recurse(&f.body, matches),
-            Stmt::ClassDef(c) => recurse(&c.body, matches),
-            Stmt::If(if_stmt) => {
-                recurse(&if_stmt.body, matches);
-                for clause in &if_stmt.elif_else_clauses {
-                    recurse(&clause.body, matches);
-                }
-            }
-            Stmt::For(for_stmt) => {
-                recurse(&for_stmt.body, matches);
-                recurse(&for_stmt.orelse, matches);
-            }
-            Stmt::While(while_stmt) => {
-                recurse(&while_stmt.body, matches);
-                recurse(&while_stmt.orelse, matches);
-            }
-            Stmt::With(with_stmt) => recurse(&with_stmt.body, matches),
-            Stmt::Try(try_stmt) => {
-                recurse(&try_stmt.body, matches);
-                for handler in &try_stmt.handlers {
-                    let ruff_python_ast::ExceptHandler::ExceptHandler(h) = handler;
-                    recurse(&h.body, matches);
-                }
-                recurse(&try_stmt.orelse, matches);
-                recurse(&try_stmt.finalbody, matches);
-            }
-            Stmt::Match(match_stmt) => {
-                for case in &match_stmt.cases {
-                    recurse(&case.body, matches);
-                }
-            }
-            _ => {}
+
+        for child_body in all_statement_bodies(stmt) {
+            recurse(child_body, matches);
         }
     }
 }

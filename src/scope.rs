@@ -71,24 +71,26 @@ fn analyze_block_impl<'a>(
     after_stmts: impl Iterator<Item = &'a Stmt>,
     all_stores_as_outputs: bool,
 ) -> BlockInterface {
+    // Collect variable events from the target block.
     let mut collector = VarCollector::new();
     for stmt in block {
         collector.visit_stmt(stmt);
     }
 
-    // Inputs: loaded before being stored within the block.
     let inputs = collector.inputs();
 
+    // Determine outputs based on scope semantics.
     let outputs = if all_stores_as_outputs {
         // In class scope, all stores become class attributes (visible externally).
         collector.stores()
     } else {
-        // Determine which variables stored in the block are used after it.
+        // In function scope, only stores used in after-block become outputs.
         let mut after_collector = VarCollector::new();
         for stmt in after_stmts {
             after_collector.visit_stmt(stmt);
         }
         let after_inputs = after_collector.inputs();
+
         collector
             .stores()
             .into_iter()
@@ -221,7 +223,13 @@ pub fn unify_signatures(
         .outputs
         .iter()
         .map(|out_var| {
-            if let Some(input_idx) = ref_iface.inputs.iter().position(|inp| inp == out_var) {
+            let is_also_input = ref_iface.inputs.iter().any(|inp| inp == out_var);
+            if is_also_input {
+                let input_idx = ref_iface
+                    .inputs
+                    .iter()
+                    .position(|inp| inp == out_var)
+                    .unwrap();
                 default_param_name(input_idx)
             } else {
                 let name = default_return_name(ret_counter);
@@ -311,9 +319,7 @@ impl VarCollector {
         }
         result
     }
-}
 
-impl VarCollector {
     /// Handle a comprehension with its own scope (Python 3 semantics).
     /// The first generator's `iter` is evaluated in the enclosing scope.
     /// Targets and all other expressions are in the comprehension's scope.

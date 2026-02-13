@@ -303,21 +303,6 @@ fn rename_collection(
     Ok(())
 }
 
-/// Auto-sync output=input returns: if a return's original variable name
-/// matches a param's original variable name, update the return to use the
-/// (possibly renamed) param name.
-pub fn sync_linked_returns(sig: &mut FunctionSignature) {
-    if let (Some(arg_map), Some(ret_map)) =
-        (sig.block_arg_maps.first(), sig.block_return_maps.first())
-    {
-        for (ret_idx, ret_orig) in ret_map.iter().enumerate() {
-            if let Some(param_idx) = arg_map.iter().position(|a| a == ret_orig) {
-                sig.returns[ret_idx] = sig.params[param_idx].clone();
-            }
-        }
-    }
-}
-
 /// Step 3: Rename parameters with validation.
 ///
 /// After renaming, returns whose original variable matches a param's original
@@ -333,15 +318,19 @@ fn rename_parameters(sig: &mut FunctionSignature) -> Result<()> {
     Ok(())
 }
 
-/// Interactive naming flow shared by single-file and multi-file paths.
-/// Returns the chosen function name.
-fn interactive_naming(sig: &mut FunctionSignature, block_stores: &[Vec<String>]) -> Result<String> {
-    let func_name = get_function_name("extracted_func_0")?;
-    rename_parameters(sig)?;
-    rename_returns(sig)?;
-    add_returns(sig, block_stores)?;
-    validate_rename_map(sig)?;
-    Ok(func_name)
+/// Auto-sync output=input returns: if a return's original variable name
+/// matches a param's original variable name, update the return to use the
+/// (possibly renamed) param name.
+pub fn sync_linked_returns(sig: &mut FunctionSignature) {
+    if let (Some(arg_map), Some(ret_map)) =
+        (sig.block_arg_maps.first(), sig.block_return_maps.first())
+    {
+        for (ret_idx, ret_orig) in ret_map.iter().enumerate() {
+            if let Some(param_idx) = arg_map.iter().position(|a| a == ret_orig) {
+                sig.returns[ret_idx] = sig.params[param_idx].clone();
+            }
+        }
+    }
 }
 
 /// Step 4: Rename return values with validation.
@@ -424,6 +413,17 @@ fn add_returns(sig: &mut FunctionSignature, block_stores: &[Vec<String>]) -> Res
     )?;
 
     Ok(())
+}
+
+/// Interactive naming flow shared by single-file and multi-file paths.
+/// Returns the chosen function name.
+fn interactive_naming(sig: &mut FunctionSignature, block_stores: &[Vec<String>]) -> Result<String> {
+    let func_name = get_function_name("extracted_func_0")?;
+    rename_parameters(sig)?;
+    rename_returns(sig)?;
+    add_returns(sig, block_stores)?;
+    validate_rename_map(sig)?;
+    Ok(func_name)
 }
 
 // ── Main entry point ─────────────────────────────────────────────────

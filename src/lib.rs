@@ -150,28 +150,8 @@ pub fn plan_extraction_multi(
 
     let target_body = &parsed[0].body;
 
-    // Determine scope context from the target file.
-    let mut scope_ctx = scan::find_scope_for_matches(
-        target_body,
-        target_source,
-        &blocks
-            .iter()
-            .filter(|b| b.source_index == 0)
-            .map(|b| b.block.clone())
-            .collect::<Vec<_>>(),
-    );
-
-    // If any block comes from a different file, force module-level placement.
+    // Check if blocks span multiple files (affects scope placement).
     let is_cross_file = blocks.iter().any(|b| b.source_index != 0);
-    if is_cross_file {
-        scope_ctx = ScopeContext {
-            kind: ScopeKind::Module,
-            body_start_offset: 0,
-            indent: String::new(),
-            class_def_offset: None,
-            parent_indent: None,
-        };
-    }
 
     // Get window size from the target file's innermost body.
     let (inner_body, target_block_scope) =
@@ -179,6 +159,24 @@ pub fn plan_extraction_multi(
     let window_size = {
         let target_stmts = normalize::select_stmts(target_source, inner_body, start_line, end_line);
         target_stmts.len()
+    };
+
+    // Determine scope context: cross-file forces module level, otherwise use target's scope.
+    let scope_ctx = if is_cross_file {
+        ScopeContext {
+            kind: ScopeKind::Module,
+            body_start_offset: 0,
+            indent: String::new(),
+            class_def_offset: None,
+            parent_indent: None,
+        }
+    } else {
+        let target_blocks: Vec<MatchedBlock> = blocks
+            .iter()
+            .filter(|b| b.source_index == 0)
+            .map(|b| b.block.clone())
+            .collect();
+        scan::find_scope_for_matches(target_body, target_source, &target_blocks)
     };
 
     // For each block, find its body and collect after-block statements up to scope boundary.
@@ -222,37 +220,33 @@ pub fn plan_extraction_multi(
     }
 
     // Extract divergences between block 0 and each other block.
+    let ref_block = sig_inputs[0].0;
     let mut all_divs = Vec::new();
     let mut divergent_literal_offsets = Vec::new();
-    if sig_inputs.len() >= 2 {
-        let (ref_block, _) = &sig_inputs[0];
-        for (i, (other_block, _)) in sig_inputs.iter().enumerate().skip(1) {
-            let (divs, lit_offsets) = diff_extract::extract_divergences(
-                ref_block,
-                other_block,
-                sources[blocks[0].source_index],
-                sources[blocks[i].source_index],
-            )?;
-            // Use the first comparison's literal offsets (block 0 vs block 1).
-            if i == 1 {
-                divergent_literal_offsets = lit_offsets;
-            }
-            all_divs.push(divs);
+
+    for (i, (other_block, _)) in sig_inputs.iter().enumerate().skip(1) {
+        let (divs, lit_offsets) = diff_extract::extract_divergences(
+            ref_block,
+            other_block,
+            sources[blocks[0].source_index],
+            sources[blocks[i].source_index],
+        )?;
+
+        // Use the first comparison's literal offsets (block 0 vs block 1).
+        if i == 1 {
+            divergent_literal_offsets = lit_offsets;
         }
+        all_divs.push(divs);
     }
 
     // In class/module scope, all stored variables become outputs.
-    // Class: assignments create class attributes accessible externally.
-    // Module: assignments create module globals importable by other modules.
     // Use the target block's own scope (not placement scope) to decide this.
-    // E.g., cross_function blocks are inside functions even though placement is module-level.
     let all_stores_as_outputs =
         target_block_scope.kind == ScopeKind::Class || target_block_scope.kind == ScopeKind::Module;
     let sig = scope::unify_signatures(&sig_inputs, &all_divs, all_stores_as_outputs);
 
-    let ref_stmts = sig_inputs[0].0;
-    let ref_node_positions = rewrite::collect_node_positions(ref_stmts);
-
+    // Collect AST node positions and block stores for the plan.
+    let ref_node_positions = rewrite::collect_node_positions(ref_block);
     let block_stores: Vec<Vec<String>> = sig_inputs
         .iter()
         .map(|(block, _)| scope::block_stores(block))

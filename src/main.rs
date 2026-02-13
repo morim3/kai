@@ -3,6 +3,8 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use clap::Parser;
 
+const DEFAULT_FUNC_NAME: &str = "extracted_func_0";
+
 #[derive(Parser, Debug)]
 #[command(name = "kai", about = "Python Extract Method refactoring tool")]
 struct Cli {
@@ -32,14 +34,17 @@ fn parse_positional(args: &[String]) -> Result<(Vec<String>, usize, usize)> {
         bail!("Usage: kai FILE [FILE...] START END");
     }
 
-    let end: usize = args[args.len() - 1]
+    let last_idx = args.len() - 1;
+    let second_last_idx = args.len() - 2;
+
+    let end: usize = args[last_idx]
         .parse()
         .map_err(|_| anyhow::anyhow!("Last argument must be a line number (END)"))?;
-    let start: usize = args[args.len() - 2]
+    let start: usize = args[second_last_idx]
         .parse()
         .map_err(|_| anyhow::anyhow!("Second-to-last argument must be a line number (START)"))?;
 
-    let files: Vec<String> = args[..args.len() - 2].to_vec();
+    let files: Vec<String> = args[..second_last_idx].to_vec();
     if files.is_empty() {
         bail!("At least one file path is required");
     }
@@ -60,90 +65,135 @@ fn main() -> Result<()> {
     let interactive = !cli.no_interactive;
 
     if files.len() == 1 {
-        let source = std::fs::read_to_string(&files[0])?;
-
-        if interactive {
-            let file_path = if cli.write || cli.diff {
-                Some(files[0].as_str())
-            } else {
-                None
-            };
-            return kai::interactive::run_interactive(
-                &source, start_line, end_line, file_path, cli.diff,
-            );
-        }
-
-        let options = kai::ExtractOptions::default();
-        let result = kai::extract_method_with_options(&source, start_line, end_line, &options)?;
-
-        if cli.write {
-            std::fs::write(&files[0], &result)?;
-            eprintln!("Wrote refactored code to {}", files[0]);
-        } else if cli.diff {
-            let diff = kai::rewrite::unified_diff(&source, &result, &files[0]);
-            print!("{diff}");
-        } else {
-            print!("{result}");
-        }
+        handle_single_file(&files[0], start_line, end_line, &cli, interactive)?;
     } else {
-        let sources: Vec<String> = files
-            .iter()
-            .map(std::fs::read_to_string)
-            .collect::<Result<Vec<_>, _>>()?;
-        let source_refs: Vec<&str> = sources.iter().map(std::string::String::as_str).collect();
-        let file_refs: Vec<&str> = files.iter().map(std::string::String::as_str).collect();
-        let target_stem = file_stem(&files[0]);
-
-        if interactive {
-            return kai::interactive::run_interactive_multi(
-                &source_refs,
-                &file_refs,
-                start_line,
-                end_line,
-                cli.write || cli.diff,
-                cli.diff,
-                &target_stem,
-            );
-        }
-
-        let func_name = "extracted_func_0";
-
-        let all_blocks = kai::scan_all_sources(&source_refs, start_line, end_line)?;
-
-        let plan = kai::plan_extraction_multi(&source_refs, &all_blocks, start_line, end_line)?;
-
-        let results = kai::rewrite::apply_refactoring_multi(
-            &source_refs,
-            &all_blocks,
-            &plan.ref_node_positions,
-            &plan.sig,
-            func_name,
-            &plan.scope_ctx,
-            &target_stem,
-            &plan.divergent_literal_offsets,
-        );
-
-        if cli.write {
-            for (i, result) in results.iter().enumerate() {
-                std::fs::write(&files[i], result)?;
-                eprintln!("Wrote refactored code to {}", files[i]);
-            }
-        } else if cli.diff {
-            for (i, result) in results.iter().enumerate() {
-                if result != sources[i].as_str() {
-                    let diff = kai::rewrite::unified_diff(&sources[i], result, &files[i]);
-                    print!("{diff}");
-                }
-            }
-        } else {
-            for (i, result) in results.iter().enumerate() {
-                if files.len() > 1 {
-                    println!("=== {} ===", files[i]);
-                }
-                print!("{result}");
-            }
-        }
+        handle_multi_file(&files, start_line, end_line, &cli, interactive)?;
     }
 
+    Ok(())
+}
+
+fn handle_single_file(
+    file_path: &str,
+    start_line: usize,
+    end_line: usize,
+    cli: &Cli,
+    interactive: bool,
+) -> Result<()> {
+    let source = std::fs::read_to_string(file_path)?;
+
+    if interactive {
+        let file_path_opt = if cli.write || cli.diff {
+            Some(file_path)
+        } else {
+            None
+        };
+        return kai::interactive::run_interactive(
+            &source,
+            start_line,
+            end_line,
+            file_path_opt,
+            cli.diff,
+        );
+    }
+
+    let options = kai::ExtractOptions::default();
+    let result = kai::extract_method_with_options(&source, start_line, end_line, &options)?;
+
+    output_result(&source, &result, file_path, cli.write, cli.diff)?;
+    Ok(())
+}
+
+fn handle_multi_file(
+    files: &[String],
+    start_line: usize,
+    end_line: usize,
+    cli: &Cli,
+    interactive: bool,
+) -> Result<()> {
+    let sources: Vec<String> = files
+        .iter()
+        .map(std::fs::read_to_string)
+        .collect::<Result<Vec<_>, _>>()?;
+    let source_refs: Vec<&str> = sources.iter().map(std::string::String::as_str).collect();
+    let file_refs: Vec<&str> = files.iter().map(std::string::String::as_str).collect();
+    let target_stem = file_stem(&files[0]);
+
+    if interactive {
+        return kai::interactive::run_interactive_multi(
+            &source_refs,
+            &file_refs,
+            start_line,
+            end_line,
+            cli.write || cli.diff,
+            cli.diff,
+            &target_stem,
+        );
+    }
+
+    let all_blocks = kai::scan_all_sources(&source_refs, start_line, end_line)?;
+    let plan = kai::plan_extraction_multi(&source_refs, &all_blocks, start_line, end_line)?;
+
+    let results = kai::rewrite::apply_refactoring_multi(
+        &source_refs,
+        &all_blocks,
+        &plan.ref_node_positions,
+        &plan.sig,
+        DEFAULT_FUNC_NAME,
+        &plan.scope_ctx,
+        &target_stem,
+        &plan.divergent_literal_offsets,
+    );
+
+    output_multi_results(&sources, &results, files, cli.write, cli.diff)?;
+    Ok(())
+}
+
+fn output_result(
+    original: &str,
+    refactored: &str,
+    file_path: &str,
+    write: bool,
+    show_diff: bool,
+) -> Result<()> {
+    if write {
+        std::fs::write(file_path, refactored)?;
+        eprintln!("Wrote refactored code to {}", file_path);
+    } else if show_diff {
+        let diff = kai::rewrite::unified_diff(original, refactored, file_path);
+        print!("{diff}");
+    } else {
+        print!("{refactored}");
+    }
+    Ok(())
+}
+
+fn output_multi_results(
+    sources: &[String],
+    results: &[String],
+    files: &[String],
+    write: bool,
+    show_diff: bool,
+) -> Result<()> {
+    if write {
+        for (i, result) in results.iter().enumerate() {
+            std::fs::write(&files[i], result)?;
+            eprintln!("Wrote refactored code to {}", files[i]);
+        }
+    } else if show_diff {
+        for (i, result) in results.iter().enumerate() {
+            if result != sources[i].as_str() {
+                let diff = kai::rewrite::unified_diff(&sources[i], result, &files[i]);
+                print!("{diff}");
+            }
+        }
+    } else {
+        for (i, result) in results.iter().enumerate() {
+            if files.len() > 1 {
+                println!("=== {} ===", files[i]);
+            }
+            print!("{result}");
+        }
+    }
     Ok(())
 }

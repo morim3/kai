@@ -71,33 +71,33 @@ struct SafetyChecker {
     unsafe_nodes: Vec<UnsafeNode>,
 }
 
+impl SafetyChecker {
+    fn record_if_unsafe(&mut self, kind: UnsafeKind, offset: usize, requires_loop_scope: bool) {
+        let is_unsafe = if requires_loop_scope {
+            self.loop_depth == 0 && self.function_depth == 0
+        } else {
+            self.function_depth == 0
+        };
+
+        if is_unsafe {
+            self.unsafe_nodes.push(UnsafeNode { kind, offset });
+        }
+    }
+}
+
 impl<'a> Visitor<'a> for SafetyChecker {
     fn visit_stmt(&mut self, stmt: &'a Stmt) {
         match stmt {
             Stmt::Break(b) => {
-                if self.loop_depth == 0 && self.function_depth == 0 {
-                    self.unsafe_nodes.push(UnsafeNode {
-                        kind: UnsafeKind::Break,
-                        offset: b.range().start().to_usize(),
-                    });
-                }
+                self.record_if_unsafe(UnsafeKind::Break, b.range().start().to_usize(), true);
             }
             Stmt::Continue(c) => {
-                if self.loop_depth == 0 && self.function_depth == 0 {
-                    self.unsafe_nodes.push(UnsafeNode {
-                        kind: UnsafeKind::Continue,
-                        offset: c.range().start().to_usize(),
-                    });
-                }
+                self.record_if_unsafe(UnsafeKind::Continue, c.range().start().to_usize(), true);
             }
             Stmt::Return(r) => {
-                if self.function_depth == 0 {
-                    self.unsafe_nodes.push(UnsafeNode {
-                        kind: UnsafeKind::Return,
-                        offset: r.range().start().to_usize(),
-                    });
-                }
+                self.record_if_unsafe(UnsafeKind::Return, r.range().start().to_usize(), false);
             }
+
             Stmt::For(_) | Stmt::While(_) => {
                 self.loop_depth += 1;
                 walk_stmt(self, stmt);
@@ -108,6 +108,7 @@ impl<'a> Visitor<'a> for SafetyChecker {
                 walk_stmt(self, stmt);
                 self.function_depth -= 1;
             }
+
             _ => {
                 walk_stmt(self, stmt);
             }
@@ -117,26 +118,18 @@ impl<'a> Visitor<'a> for SafetyChecker {
     fn visit_expr(&mut self, expr: &'a Expr) {
         match expr {
             Expr::Yield(y) => {
-                if self.function_depth == 0 {
-                    self.unsafe_nodes.push(UnsafeNode {
-                        kind: UnsafeKind::Yield,
-                        offset: y.range().start().to_usize(),
-                    });
-                }
+                self.record_if_unsafe(UnsafeKind::Yield, y.range().start().to_usize(), false);
             }
             Expr::YieldFrom(y) => {
-                if self.function_depth == 0 {
-                    self.unsafe_nodes.push(UnsafeNode {
-                        kind: UnsafeKind::YieldFrom,
-                        offset: y.range().start().to_usize(),
-                    });
-                }
+                self.record_if_unsafe(UnsafeKind::YieldFrom, y.range().start().to_usize(), false);
             }
+
             Expr::Lambda(_) => {
                 self.function_depth += 1;
                 walk_expr(self, expr);
                 self.function_depth -= 1;
             }
+
             _ => {
                 walk_expr(self, expr);
             }
@@ -159,15 +152,17 @@ mod tests {
             ("yield from gen()", UnsafeKind::YieldFrom),
         ];
         for (code, expected_kind) in cases {
-            // Wrap break/continue in a valid loop for parsing
-            let (parse_code, check_inner) = match *expected_kind {
-                UnsafeKind::Break | UnsafeKind::Continue => {
-                    (format!("for _ in x:\n    {code}"), true)
-                }
-                _ => (code.to_string(), false),
+            let needs_loop_wrapper =
+                matches!(expected_kind, UnsafeKind::Break | UnsafeKind::Continue);
+
+            let (parse_code, check_inner) = if needs_loop_wrapper {
+                (format!("for _ in x:\n    {code}"), true)
+            } else {
+                (code.to_string(), false)
             };
+
             let stmts = parse_stmts(&parse_code);
-            // For break/continue, check the inner body of the for loop
+
             let check_stmts = if check_inner {
                 if let Stmt::For(f) = &stmts[0] {
                     f.body.as_slice()
@@ -177,6 +172,7 @@ mod tests {
             } else {
                 stmts.as_slice()
             };
+
             let err = check_extractable(check_stmts).unwrap_err();
             assert_eq!(
                 err[0].kind, *expected_kind,
