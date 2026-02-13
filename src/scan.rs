@@ -28,7 +28,7 @@ pub struct ScopeContext {
     pub parent_indent: Option<String>,
 }
 
-/// Result of a scope traversal: the innermost body/context and optionally the parent.
+/// Result of a scope traversal: the innermost body and its scope context.
 pub struct ScopeInfo<'a> {
     /// The actual innermost body containing the target (may be a control flow body).
     pub inner_body: &'a [Stmt],
@@ -36,12 +36,9 @@ pub struct ScopeInfo<'a> {
     /// Used for scope-level checks; always a scope body, never a control flow body.
     pub scope_body: &'a [Stmt],
     pub inner_ctx: ScopeContext,
-    /// The body one level above the innermost scope (None if innermost == top level).
-    pub parent: Option<(&'a [Stmt], ScopeContext)>,
 }
 
-/// Traverse the AST to find both the innermost scope body containing the target
-/// and the parent scope (one level up). A single traversal produces both results.
+/// Traverse the AST to find the innermost scope body containing the target.
 pub fn find_scopes<'a>(
     top_body: &'a [Stmt],
     source: &str,
@@ -92,7 +89,7 @@ fn find_scopes_inner<'a>(
             };
 
             if let Some((child_body, child_kind, child_class_offset, child_parent_indent)) = child {
-                let mut info = find_scopes_inner(
+                return find_scopes_inner(
                     child_body,
                     source,
                     target_start,
@@ -102,18 +99,6 @@ fn find_scopes_inner<'a>(
                     child_parent_indent,
                     child_body,
                 );
-                // If no parent was found deeper, the current scope is the parent.
-                if info.parent.is_none() {
-                    let ctx = make_scope_context(
-                        scope_body,
-                        source,
-                        current_kind,
-                        class_def_offset,
-                        parent_indent,
-                    );
-                    info.parent = Some((scope_body, ctx));
-                }
-                return info;
             }
 
             // Check for control flow children. These don't create Python scopes,
@@ -147,7 +132,6 @@ fn find_scopes_inner<'a>(
         inner_body: body,
         scope_body,
         inner_ctx: ctx,
-        parent: None,
     }
 }
 
@@ -318,39 +302,66 @@ fn collect_after_inner<'a>(
     false
 }
 
-/// Determine the appropriate scope context based on where all matched blocks reside.
+/// Determine the appropriate scope context for the extracted function.
 ///
-/// If all matches are within the same scope, returns the innermost scope context.
-/// If matches span sibling scopes, returns the parent scope context.
+/// Finds the narrowest Python scope (function/class/module) that contains ALL
+/// matched blocks. This is the lowest common ancestor (LCA) of all matches
+/// in the scope tree. Works correctly for any nesting depth.
 pub fn find_scope_for_matches(
     top_body: &[Stmt],
     source: &str,
-    target_start: usize,
-    target_end: usize,
     matches: &[MatchedBlock],
 ) -> ScopeContext {
-    let info = find_scopes(top_body, source, target_start, target_end);
+    find_common_scope(top_body, source, matches, ScopeKind::Module, None, None)
+}
 
-    // Check if all matches fall within the byte range of the target's scope body.
-    // This correctly handles matches in different control flow branches within the
-    // same scope (e.g., if/else bodies inside the same function).
-    let all_in_same_scope =
-        if let (Some(first), Some(last)) = (info.scope_body.first(), info.scope_body.last()) {
-            let scope_start = first.range().start().to_usize();
-            let scope_end = last.range().end().to_usize();
-            matches
-                .iter()
-                .all(|m| m.start_offset >= scope_start && m.start_offset < scope_end)
-        } else {
-            true
+/// Recursively descend through scope-creating nodes (FunctionDef/ClassDef)
+/// as long as a single child scope contains ALL matches. When no single child
+/// scope contains all matches, the current level is the LCA.
+fn find_common_scope(
+    body: &[Stmt],
+    source: &str,
+    matches: &[MatchedBlock],
+    kind: ScopeKind,
+    class_def_offset: Option<usize>,
+    parent_indent: Option<String>,
+) -> ScopeContext {
+    for stmt in body {
+        let range = stmt.range();
+        // Only consider scope-creating statements (FunctionDef, ClassDef).
+        // Control flow (for/if/while/with/try) does not create Python scopes.
+        let child = match stmt {
+            Stmt::FunctionDef(f) => Some((f.body.as_slice(), ScopeKind::Function, None, None)),
+            Stmt::ClassDef(c) => Some((
+                c.body.as_slice(),
+                ScopeKind::Class,
+                Some(range.start().to_usize()),
+                body.first()
+                    .map(|s| indent_at_offset(source, s.range().start().to_usize())),
+            )),
+            _ => None,
         };
-
-    if all_in_same_scope {
-        return info.inner_ctx;
+        if let Some((child_body, child_kind, child_class_offset, child_parent_indent)) = child {
+            let stmt_start = range.start().to_usize();
+            let stmt_end = range.end().to_usize();
+            if matches
+                .iter()
+                .all(|m| m.start_offset >= stmt_start && m.start_offset < stmt_end)
+            {
+                // All matches are within this child scope — descend deeper.
+                return find_common_scope(
+                    child_body,
+                    source,
+                    matches,
+                    child_kind,
+                    child_class_offset,
+                    child_parent_indent,
+                );
+            }
+        }
     }
-
-    // Matches span sibling scopes — use parent scope context.
-    info.parent.map(|(_, ctx)| ctx).unwrap_or(info.inner_ctx)
+    // No single child scope contains all matches — this is the LCA.
+    make_scope_context(body, source, kind, class_def_offset, parent_indent)
 }
 
 /// A matched block in the source file.
@@ -392,14 +403,11 @@ pub fn find_matches_with_hash(
     let window_size = target_stmts.len();
     let target_hash = hash_stmt_refs(&target_stmts, source);
 
-    // Scan the widest relevant scope: parent body (if it exists) or scope body.
-    // This recursively covers the innermost body, sibling scopes, and parent-level statements.
-    let search_root = match &scope_info.parent {
-        Some((parent_body, _)) => parent_body,
-        None => scope_info.scope_body,
-    };
+    // Scan the entire file from the module body. scan_all_bodies_recursive
+    // descends into all scopes (functions, classes) and control flow bodies,
+    // so this finds matches at any nesting depth.
     let mut matches = Vec::new();
-    scan_all_bodies_recursive(source, search_root, target_hash, window_size, &mut matches);
+    scan_all_bodies_recursive(source, top_body, target_hash, window_size, &mut matches);
 
     Ok((target_hash, window_size, matches))
 }
@@ -800,6 +808,100 @@ class Bar:
         y = x + 20
 ";
         assert_matches(code, 2, 3, &[(2, 3), (7, 8)]);
+    }
+
+    #[test]
+    fn scope_for_matches_same_function() {
+        let code = "\
+def foo():
+    a = 1
+    b = a + 2
+    x = 10
+    y = x + 20
+";
+        let parsed = crate::parse_python(code).unwrap();
+        let body = &parsed.syntax().body;
+        let matches = find_matches(code, 2, 3).unwrap();
+        let ctx = find_scope_for_matches(body, code, &matches);
+        assert_eq!(ctx.kind, ScopeKind::Function);
+    }
+
+    #[test]
+    fn scope_for_matches_across_classes() {
+        // Matches in different classes → LCA is module scope.
+        let code = "\
+class A:
+    def foo(self):
+        x = 1
+        print(x)
+
+class B:
+    def bar(self):
+        y = 10
+        print(y)
+";
+        let parsed = crate::parse_python(code).unwrap();
+        let body = &parsed.syntax().body;
+        let matches = find_matches(code, 3, 4).unwrap();
+        assert_eq!(matches.len(), 2);
+        let ctx = find_scope_for_matches(body, code, &matches);
+        assert_eq!(ctx.kind, ScopeKind::Module);
+    }
+
+    #[test]
+    fn scope_for_matches_across_sibling_functions() {
+        let code = "\
+def foo():
+    a = 1
+    b = a + 2
+
+def bar():
+    x = 10
+    y = x + 20
+";
+        let parsed = crate::parse_python(code).unwrap();
+        let body = &parsed.syntax().body;
+        let matches = find_matches(code, 2, 3).unwrap();
+        assert_eq!(matches.len(), 2);
+        let ctx = find_scope_for_matches(body, code, &matches);
+        assert_eq!(ctx.kind, ScopeKind::Module);
+    }
+
+    #[test]
+    fn scan_across_three_level_nesting() {
+        // Block inside Class→Method (3 levels: Module→Class→Function).
+        // Matches should be found across separate top-level classes.
+        let code = "\
+class Animal:
+    @classmethod
+    def create(cls):
+        name = \"dog\"
+        obj = cls(name)
+
+class Vehicle:
+    @classmethod
+    def make(cls):
+        label = \"car\"
+        obj = cls(label)
+";
+        assert_matches(code, 4, 5, &[(4, 5), (10, 11)]);
+    }
+
+    #[test]
+    fn scan_across_nested_functions() {
+        // Block inside Function→Function (3 levels: Module→Function→Function).
+        let code = "\
+def outer_a():
+    def inner():
+        x = 1
+        print(x)
+
+def outer_b():
+    def helper():
+        y = 10
+        print(y)
+";
+        assert_matches(code, 3, 4, &[(3, 4), (8, 9)]);
     }
 
     #[test]

@@ -154,8 +154,6 @@ pub fn plan_extraction_multi(
     let mut scope_ctx = scan::find_scope_for_matches(
         target_body,
         target_source,
-        start_line,
-        end_line,
         &blocks
             .iter()
             .filter(|b| b.source_index == 0)
