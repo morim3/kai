@@ -201,17 +201,6 @@ fn body_contains_lines(
     body_start <= target_start && body_end >= target_end
 }
 
-/// Convenience wrapper: returns only the innermost body and its scope context.
-pub fn find_innermost_body<'a>(
-    body: &'a [Stmt],
-    source: &str,
-    target_start: usize,
-    target_end: usize,
-) -> (&'a [Stmt], ScopeContext) {
-    let info = find_scopes(body, source, target_start, target_end);
-    (info.inner_body, info.inner_ctx)
-}
-
 /// Build a `ScopeContext` from a body and its scope metadata.
 fn make_scope_context(
     body: &[Stmt],
@@ -233,35 +222,6 @@ fn make_scope_context(
         class_def_offset,
         parent_indent,
     }
-}
-
-/// Find the innermost body containing a given byte offset.
-///
-/// Used by `lib.rs` to find each matched block's body for `after_block` computation.
-pub fn find_body_for_block<'a>(
-    top_body: &'a [Stmt],
-    source: &str,
-    block_start_offset: usize,
-) -> &'a [Stmt] {
-    let line = line_of_offset(source, block_start_offset);
-    let (body, _) = find_innermost_body(top_body, source, line, line);
-    body
-}
-
-/// Find the Python scope body (Function/Class/Module) containing a given byte offset.
-///
-/// Unlike `find_body_for_block`, this returns the scope body rather than the
-/// innermost control flow body. Python control flow (for/if/while/with/try)
-/// does not create new scopes, so variable liveness must be checked at the
-/// scope boundary.
-pub fn find_scope_body_for_block<'a>(
-    top_body: &'a [Stmt],
-    source: &str,
-    block_start_offset: usize,
-) -> &'a [Stmt] {
-    let line = line_of_offset(source, block_start_offset);
-    let info = find_scopes(top_body, source, line, line);
-    info.scope_body
 }
 
 /// Collect all statements that come after a block, up to the Python scope boundary.

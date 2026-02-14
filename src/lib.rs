@@ -153,11 +153,11 @@ pub fn plan_extraction_multi(
     // Check if blocks span multiple files (affects scope placement).
     let is_cross_file = blocks.iter().any(|b| b.source_index != 0);
 
-    // Get window size from the target file's innermost body.
-    let (inner_body, target_block_scope) =
-        scan::find_innermost_body(target_body, target_source, start_line, end_line);
+    // Find the target block's scope info (innermost body + scope context).
+    let target_scope_info = scan::find_scopes(target_body, target_source, start_line, end_line);
     let window_size = {
-        let target_stmts = normalize::select_stmts(target_source, inner_body, start_line, end_line);
+        let target_stmts =
+            normalize::select_stmts(target_source, target_scope_info.inner_body, start_line, end_line);
         target_stmts.len()
     };
 
@@ -188,19 +188,18 @@ pub fn plan_extraction_multi(
     for sourced in blocks {
         let src = sources[sourced.source_index];
         let body_stmts = &parsed[sourced.source_index].body;
-        let body = scan::find_body_for_block(body_stmts, src, sourced.block.start_offset);
-        let idx = body
-            .iter()
-            .position(|s| s.range().start().to_usize() == sourced.block.start_offset)
-            .context("block offset does not match any statement")?;
-        let block_slice = &body[idx..idx + window_size];
-        block_slices.push(block_slice);
+        let block_offset = sourced.block.start_offset;
+        let block_line = normalize::line_of_offset(src, block_offset);
+        let info = scan::find_scopes(body_stmts, src, block_line, block_line);
 
-        // Collect after-block statements up to the scope boundary.
-        let scope_body =
-            scan::find_scope_body_for_block(body_stmts, src, sourced.block.start_offset);
-        let after_stmts =
-            scan::collect_after_stmts(scope_body, sourced.block.start_offset, window_size);
+        let idx = info
+            .inner_body
+            .iter()
+            .position(|s| s.range().start().to_usize() == block_offset)
+            .context("block offset does not match any statement")?;
+        block_slices.push(&info.inner_body[idx..idx + window_size]);
+
+        let after_stmts = scan::collect_after_stmts(info.scope_body, block_offset, window_size);
         after_stmts_per_block.push(after_stmts);
     }
 
@@ -245,8 +244,8 @@ pub fn plan_extraction_multi(
 
     // In class/module scope, all stored variables become outputs.
     // Use the target block's own scope (not placement scope) to decide this.
-    let all_stores_as_outputs =
-        target_block_scope.kind == ScopeKind::Class || target_block_scope.kind == ScopeKind::Module;
+    let all_stores_as_outputs = target_scope_info.inner_ctx.kind == ScopeKind::Class
+        || target_scope_info.inner_ctx.kind == ScopeKind::Module;
     let sig = scope::unify_signatures(&sig_inputs, &all_divs, &all_lit_offsets, all_stores_as_outputs);
 
     // Collect AST node positions and block stores for the plan.
