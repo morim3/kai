@@ -44,12 +44,19 @@ pub(crate) mod test_utils {
 }
 
 use anyhow::{Context, Result, bail};
-use ruff_python_ast::ModModule;
+use ruff_python_ast::{ModModule, Stmt};
 use ruff_python_parser::Parsed;
 use ruff_text_size::Ranged;
 
+use diff_extract::Divergence;
 use scan::{MatchedBlock, ScopeContext, ScopeKind};
 use scope::FunctionSignature;
+
+/// Per-block statement slices and their after-block statements.
+type BlockContexts<'a> = (Vec<&'a [Stmt]>, Vec<Vec<&'a Stmt>>);
+
+/// Divergences, per-comparison literal offsets, and the union of divergent literal offsets.
+type DivergenceResult = (Vec<Vec<Divergence>>, Vec<Vec<usize>>, Vec<usize>);
 
 /// Parse Python source, mapping the parser error to `anyhow`.
 pub fn parse_python(source: &str) -> Result<Parsed<ModModule>> {
@@ -129,40 +136,17 @@ pub fn scan_all_sources(
     Ok(all_blocks)
 }
 
-/// Stage 1+2 (multi-file): Compute the extraction plan across multiple source files.
+/// Determine the scope context for function placement.
 ///
-/// `sources[0]` is the target file. `blocks` are tagged with their source file index.
-/// When blocks span multiple files, the scope is forced to `Module` level
-/// (to make the function importable).
-pub fn plan_extraction_multi(
-    sources: &[&str],
+/// Cross-file refactoring forces module-level placement (to make the function importable).
+/// Single-file uses the LCA scope of all matched blocks.
+fn resolve_scope_context(
+    target_body: &[Stmt],
+    target_source: &str,
     blocks: &[SourcedBlock],
-    start_line: usize,
-    end_line: usize,
-) -> Result<ExtractionPlan> {
-    let target_source = sources[0];
-
-    // Parse each source once.
-    let parsed: Vec<_> = sources
-        .iter()
-        .map(|s| parse_python(s).map(ruff_python_parser::Parsed::into_syntax))
-        .collect::<Result<Vec<_>>>()?;
-
-    let target_body = &parsed[0].body;
-
-    // Check if blocks span multiple files (affects scope placement).
-    let is_cross_file = blocks.iter().any(|b| b.source_index != 0);
-
-    // Find the target block's scope info (innermost body + scope context).
-    let target_scope_info = scan::find_scopes(target_body, target_source, start_line, end_line);
-    let window_size = {
-        let target_stmts =
-            normalize::select_stmts(target_source, target_scope_info.inner_body, start_line, end_line);
-        target_stmts.len()
-    };
-
-    // Determine scope context: cross-file forces module level, otherwise use target's scope.
-    let scope_ctx = if is_cross_file {
+    is_cross_file: bool,
+) -> ScopeContext {
+    if is_cross_file {
         ScopeContext {
             kind: ScopeKind::Module,
             body_start_offset: 0,
@@ -177,14 +161,23 @@ pub fn plan_extraction_multi(
             .map(|b| b.block.clone())
             .collect();
         scan::find_scope_for_matches(target_body, target_source, &target_blocks)
-    };
+    }
+}
 
-    // For each block, find its body and collect after-block statements up to scope boundary.
-    // Python control flow (for/if/while/with/try) does not create scopes, so we must
-    // collect statements after the block at every nesting level up to the enclosing
-    // Function/Class/Module scope.
-    let mut block_slices: Vec<&[ruff_python_ast::Stmt]> = Vec::new();
-    let mut after_stmts_per_block: Vec<Vec<&ruff_python_ast::Stmt>> = Vec::new();
+/// For each block, locate its statement slice and collect after-block statements
+/// up to the enclosing scope boundary.
+///
+/// Returns `(block_slices, after_stmts_per_block)` where each entry corresponds
+/// to one element of `blocks`.
+fn collect_block_contexts<'a>(
+    sources: &[&str],
+    parsed: &'a [ModModule],
+    blocks: &[SourcedBlock],
+    window_size: usize,
+) -> Result<BlockContexts<'a>> {
+    let mut block_slices: Vec<&[Stmt]> = Vec::new();
+    let mut after_stmts_per_block: Vec<Vec<&Stmt>> = Vec::new();
+
     for sourced in blocks {
         let src = sources[sourced.source_index];
         let body_stmts = &parsed[sourced.source_index].body;
@@ -203,22 +196,18 @@ pub fn plan_extraction_multi(
         after_stmts_per_block.push(after_stmts);
     }
 
-    // Build sig_inputs by combining block slices with after-statement references.
-    let sig_inputs: Vec<(&[ruff_python_ast::Stmt], &[&ruff_python_ast::Stmt])> = block_slices
-        .iter()
-        .zip(after_stmts_per_block.iter())
-        .map(|(block, after)| (*block, after.as_slice()))
-        .collect();
+    Ok((block_slices, after_stmts_per_block))
+}
 
-    // Safety check: verify block 0 can be extracted into a function.
-    if let Err(unsafe_nodes) = safety::check_extractable(sig_inputs[0].0) {
-        bail!(
-            "{}",
-            safety::format_unsafe_error(sources[blocks[0].source_index], &unsafe_nodes)
-        );
-    }
-
-    // Extract divergences between block 0 and each other block.
+/// Extract divergences between block 0 (reference) and each subsequent block.
+///
+/// Returns `(all_divergences, all_lit_offsets, divergent_literal_offsets)` where
+/// `divergent_literal_offsets` is the union of literal offsets across all comparisons.
+fn extract_all_divergences(
+    sig_inputs: &[(&[Stmt], &[&Stmt])],
+    sources: &[&str],
+    blocks: &[SourcedBlock],
+) -> Result<DivergenceResult> {
     let ref_block = sig_inputs[0].0;
     let mut all_divs = Vec::new();
     let mut all_lit_offsets: Vec<Vec<usize>> = Vec::new();
@@ -242,14 +231,78 @@ pub fn plan_extraction_multi(
         all_divs.push(divs);
     }
 
+    Ok((all_divs, all_lit_offsets, divergent_literal_offsets))
+}
+
+/// Stage 1+2 (multi-file): Compute the extraction plan across multiple source files.
+///
+/// `sources[0]` is the target file. `blocks` are tagged with their source file index.
+/// When blocks span multiple files, the scope is forced to `Module` level
+/// (to make the function importable).
+pub fn plan_extraction_multi(
+    sources: &[&str],
+    blocks: &[SourcedBlock],
+    start_line: usize,
+    end_line: usize,
+) -> Result<ExtractionPlan> {
+    let target_source = sources[0];
+
+    // Parse each source once.
+    let parsed: Vec<_> = sources
+        .iter()
+        .map(|s| parse_python(s).map(ruff_python_parser::Parsed::into_syntax))
+        .collect::<Result<Vec<_>>>()?;
+
+    let target_body = &parsed[0].body;
+    let is_cross_file = blocks.iter().any(|b| b.source_index != 0);
+
+    // Find the target block's scope info (needed for window_size and all_stores_as_outputs).
+    let target_scope_info = scan::find_scopes(target_body, target_source, start_line, end_line);
+    let window_size = {
+        let target_stmts = normalize::select_stmts(
+            target_source,
+            target_scope_info.inner_body,
+            start_line,
+            end_line,
+        );
+        target_stmts.len()
+    };
+
+    let scope_ctx = resolve_scope_context(target_body, target_source, blocks, is_cross_file);
+    let (block_slices, after_stmts_per_block) =
+        collect_block_contexts(sources, &parsed, blocks, window_size)?;
+
+    // Build sig_inputs by combining block slices with after-statement references.
+    let sig_inputs: Vec<(&[Stmt], &[&Stmt])> = block_slices
+        .iter()
+        .zip(after_stmts_per_block.iter())
+        .map(|(block, after)| (*block, after.as_slice()))
+        .collect();
+
+    // Safety check: verify block 0 can be extracted into a function.
+    if let Err(unsafe_nodes) = safety::check_extractable(sig_inputs[0].0) {
+        bail!(
+            "{}",
+            safety::format_unsafe_error(sources[blocks[0].source_index], &unsafe_nodes)
+        );
+    }
+
+    let (all_divs, all_lit_offsets, divergent_literal_offsets) =
+        extract_all_divergences(&sig_inputs, sources, blocks)?;
+
     // In class/module scope, all stored variables become outputs.
     // Use the target block's own scope (not placement scope) to decide this.
     let all_stores_as_outputs = target_scope_info.inner_ctx.kind == ScopeKind::Class
         || target_scope_info.inner_ctx.kind == ScopeKind::Module;
-    let sig = scope::unify_signatures(&sig_inputs, &all_divs, &all_lit_offsets, all_stores_as_outputs);
+    let sig = scope::unify_signatures(
+        &sig_inputs,
+        &all_divs,
+        &all_lit_offsets,
+        all_stores_as_outputs,
+    );
 
     // Collect AST node positions and block stores for the plan.
-    let ref_node_positions = rewrite::collect_node_positions(ref_block);
+    let ref_node_positions = rewrite::collect_node_positions(sig_inputs[0].0);
     let block_stores: Vec<Vec<String>> = sig_inputs
         .iter()
         .map(|(block, _)| scope::block_stores(block))
@@ -314,6 +367,32 @@ pub fn extract_method_with_options(
         &plan.sig,
         func_name,
         &plan.scope_ctx,
+        &plan.divergent_literal_offsets,
+    ))
+}
+
+/// Run the full extract-method pipeline across multiple files (one-shot).
+///
+/// Mirrors `extract_method_with_options` for the multi-file case:
+/// scan → plan → apply in a single call.
+pub fn extract_method_multi(
+    sources: &[&str],
+    start_line: usize,
+    end_line: usize,
+    options: &ExtractOptions,
+    target_file_stem: &str,
+) -> Result<Vec<String>> {
+    let all_blocks = scan_all_sources(sources, start_line, end_line)?;
+    let plan = plan_extraction_multi(sources, &all_blocks, start_line, end_line)?;
+    let func_name = options.func_name.as_deref().unwrap_or("extracted_func_0");
+    Ok(rewrite::apply_refactoring_multi(
+        sources,
+        &all_blocks,
+        &plan.ref_node_positions,
+        &plan.sig,
+        func_name,
+        &plan.scope_ctx,
+        target_file_stem,
         &plan.divergent_literal_offsets,
     ))
 }

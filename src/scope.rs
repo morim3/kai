@@ -165,7 +165,10 @@ fn collect_literal_params(
     }
 
     // Build the union of all divergent literal offsets (sorted, deduplicated).
-    let mut all_offsets: Vec<usize> = all_lit_offsets.iter().flat_map(|v| v.iter().copied()).collect();
+    let mut all_offsets: Vec<usize> = all_lit_offsets
+        .iter()
+        .flat_map(|v| v.iter().copied())
+        .collect();
     all_offsets.sort_unstable();
     all_offsets.dedup();
 
@@ -181,10 +184,13 @@ fn collect_literal_params(
             .zip(all_divergences.iter())
             .find_map(|(offsets, divs)| {
                 let lit_idx = offsets.iter().position(|&o| o == target_offset)?;
-                let lit_div = divs.iter().filter_map(|d| match d {
-                    Divergence::Literal(v0, _) => Some(v0),
-                    _ => None,
-                }).nth(lit_idx);
+                let lit_div = divs
+                    .iter()
+                    .filter_map(|d| match d {
+                        Divergence::Literal(v0, _) => Some(v0),
+                        _ => None,
+                    })
+                    .nth(lit_idx);
                 lit_div.cloned()
             })
             .expect("offset must exist in at least one comparison");
@@ -783,7 +789,11 @@ mod tests {
         let block = parse_stmts("if (x := 10) > 5:\n    y = x + 1");
         let iface = analyze_block(&block, &[], false);
         // x is stored by walrus operator before being loaded in y = x + 1
-        assert_eq!(iface.inputs, Vec::<String>::new(), "x should be stored before any load");
+        assert_eq!(
+            iface.inputs,
+            Vec::<String>::new(),
+            "x should be stored before any load"
+        );
     }
 
     #[test]

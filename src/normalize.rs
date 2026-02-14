@@ -267,10 +267,7 @@ impl<'a> Visitor<'a> for NormalizeVisitor<'_> {
         walk_comprehension(self, comprehension);
     }
 
-    fn visit_interpolated_string_element(
-        &mut self,
-        element: &'a InterpolatedStringElement,
-    ) {
+    fn visit_interpolated_string_element(&mut self, element: &'a InterpolatedStringElement) {
         // Hash the conversion flag (!r, !s, !a) which walk_interpolated_string_element ignores.
         // Without this, `f"{x!r}"` and `f"{x!s}"` would hash identically.
         if let InterpolatedStringElement::Interpolation(interp) = element {
@@ -518,21 +515,9 @@ mod tests {
                 "match x:\n    case 2:\n        pass",
                 "MatchValue literal",
             ),
-            (
-                "x: int = 1",
-                "(x): int = 1",
-                "AnnAssign simple",
-            ),
-            (
-                "x = (a, b)",
-                "x = a, b",
-                "Tuple parenthesized",
-            ),
-            (
-                "from . import x",
-                "from .. import x",
-                "ImportFrom level",
-            ),
+            ("x: int = 1", "(x): int = 1", "AnnAssign simple"),
+            ("x = (a, b)", "x = a, b", "Tuple parenthesized"),
+            ("from . import x", "from .. import x", "ImportFrom level"),
         ];
         for (a, b, label) in cases {
             assert_ne!(
@@ -559,6 +544,4 @@ mod tests {
             "Different statement counts must differ"
         );
     }
-
 }
-

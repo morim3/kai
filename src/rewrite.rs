@@ -259,7 +259,11 @@ fn find_import_insert_point(source: &str) -> usize {
         if trimmed.starts_with("import ") || trimmed.starts_with("from ") {
             let line_end = offset + line.len();
             // Point past the newline if one exists, otherwise to end of file.
-            last_import_end = Some(if line_end < source.len() { line_end + 1 } else { line_end });
+            last_import_end = Some(if line_end < source.len() {
+                line_end + 1
+            } else {
+                line_end
+            });
         } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
             // Stop at first non-import, non-comment, non-blank line
             if last_import_end.is_some() {
@@ -279,7 +283,11 @@ fn line_offsets(source: &str) -> Vec<(usize, &str)> {
         result.push((offset, line));
         let line_end = offset + line.len();
         // Only add +1 for newline if one actually exists at this position.
-        offset = if line_end < source.len() { line_end + 1 } else { line_end };
+        offset = if line_end < source.len() {
+            line_end + 1
+        } else {
+            line_end
+        };
     }
     result
 }
@@ -288,6 +296,51 @@ fn line_offsets(source: &str) -> Vec<(usize, &str)> {
 fn has_import(source: &str, module_stem: &str, func_name: &str) -> bool {
     let import_line = format!("from {module_stem} import {func_name}");
     source.lines().any(|line| line.trim() == import_line)
+}
+
+/// Apply refactoring to the target file: insert function definition + replace blocks with calls.
+fn apply_refactoring_target_file(
+    source: &str,
+    file_blocks: &[(usize, &MatchedBlock)],
+    ref_node_positions: &[NodePosition],
+    sig: &FunctionSignature,
+    func_name: &str,
+    scope: &ScopeContext,
+    divergent_literal_offsets: &[usize],
+) -> String {
+    let plain_blocks: Vec<MatchedBlock> = file_blocks.iter().map(|(_, b)| (*b).clone()).collect();
+    let file_sig = remap_signature(
+        sig,
+        &file_blocks.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+    );
+    apply_refactoring(
+        source,
+        &plain_blocks,
+        ref_node_positions,
+        &file_sig,
+        func_name,
+        scope,
+        divergent_literal_offsets,
+    )
+}
+
+/// Apply refactoring to an extra (non-target) file: replace blocks with calls + add import.
+fn apply_refactoring_extra_file(
+    source: &str,
+    file_blocks: &[(usize, &MatchedBlock)],
+    sig: &FunctionSignature,
+    func_name: &str,
+    target_file_stem: &str,
+) -> String {
+    let mut result = replace_blocks_with_calls(source, file_blocks, sig, func_name);
+
+    if !has_import(&result, target_file_stem, func_name) {
+        let import_stmt = generate_import(target_file_stem, func_name);
+        let insert_point = find_import_insert_point(&result);
+        result.insert_str(insert_point, &import_stmt);
+    }
+
+    result
 }
 
 /// Apply the multi-file refactoring: returns one modified source per input file.
@@ -317,44 +370,26 @@ pub fn apply_refactoring_multi(
     for (file_idx, file_blocks) in per_file.iter().enumerate() {
         let source = sources[file_idx];
 
-        // Guard: No matches in this file — return unchanged.
         if file_blocks.is_empty() {
             results.push(source.to_string());
-            continue;
-        }
-
-        if file_idx == 0 {
-            // Target file: use existing apply_refactoring.
-            let plain_blocks: Vec<MatchedBlock> =
-                file_blocks.iter().map(|(_, b)| (*b).clone()).collect();
-            // We need to use the block_indices to construct proper sig for this file.
-            // Since apply_refactoring uses sequential indexing, we need to create a
-            // re-indexed signature for just this file's blocks.
-            let file_sig = remap_signature(
-                sig,
-                &file_blocks.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
-            );
-            results.push(apply_refactoring(
+        } else if file_idx == 0 {
+            results.push(apply_refactoring_target_file(
                 source,
-                &plain_blocks,
+                file_blocks,
                 ref_node_positions,
-                &file_sig,
+                sig,
                 func_name,
                 scope,
                 divergent_literal_offsets,
             ));
         } else {
-            // Extra file: replace blocks with calls + add import.
-            let mut result = replace_blocks_with_calls(source, file_blocks, sig, func_name);
-
-            // Add import if not already present.
-            if !has_import(&result, target_file_stem, func_name) {
-                let import_stmt = generate_import(target_file_stem, func_name);
-                let insert_point = find_import_insert_point(&result);
-                result.insert_str(insert_point, &import_stmt);
-            }
-
-            results.push(result);
+            results.push(apply_refactoring_extra_file(
+                source,
+                file_blocks,
+                sig,
+                func_name,
+                target_file_stem,
+            ));
         }
     }
 

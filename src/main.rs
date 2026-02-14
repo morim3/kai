@@ -3,8 +3,6 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use clap::Parser;
 
-const DEFAULT_FUNC_NAME: &str = "extracted_func_0";
-
 #[derive(Parser, Debug)]
 #[command(name = "kai", about = "Python Extract Method refactoring tool")]
 struct Cli {
@@ -131,19 +129,9 @@ fn handle_multi_file(
         );
     }
 
-    let all_blocks = kai::scan_all_sources(&source_refs, start_line, end_line)?;
-    let plan = kai::plan_extraction_multi(&source_refs, &all_blocks, start_line, end_line)?;
-
-    let results = kai::rewrite::apply_refactoring_multi(
-        &source_refs,
-        &all_blocks,
-        &plan.ref_node_positions,
-        &plan.sig,
-        DEFAULT_FUNC_NAME,
-        &plan.scope_ctx,
-        &target_stem,
-        &plan.divergent_literal_offsets,
-    );
+    let options = kai::ExtractOptions::default();
+    let results =
+        kai::extract_method_multi(&source_refs, start_line, end_line, &options, &target_stem)?;
 
     output_multi_results(&sources, &results, files, cli.write, cli.diff)?;
     Ok(())
