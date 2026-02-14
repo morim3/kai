@@ -60,55 +60,7 @@ fn file_stem(path: &str) -> String {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let (files, start_line, end_line) = parse_positional(&cli.args)?;
-    let interactive = !cli.no_interactive;
 
-    if files.len() == 1 {
-        handle_single_file(&files[0], start_line, end_line, &cli, interactive)?;
-    } else {
-        handle_multi_file(&files, start_line, end_line, &cli, interactive)?;
-    }
-
-    Ok(())
-}
-
-fn handle_single_file(
-    file_path: &str,
-    start_line: usize,
-    end_line: usize,
-    cli: &Cli,
-    interactive: bool,
-) -> Result<()> {
-    let source = std::fs::read_to_string(file_path)?;
-
-    if interactive {
-        let file_path_opt = if cli.write || cli.diff {
-            Some(file_path)
-        } else {
-            None
-        };
-        return kai::interactive::run_interactive(
-            &source,
-            start_line,
-            end_line,
-            file_path_opt,
-            cli.diff,
-        );
-    }
-
-    let options = kai::ExtractOptions::default();
-    let result = kai::extract_method_with_options(&source, start_line, end_line, &options)?;
-
-    output_result(&source, &result, file_path, cli.write, cli.diff)?;
-    Ok(())
-}
-
-fn handle_multi_file(
-    files: &[String],
-    start_line: usize,
-    end_line: usize,
-    cli: &Cli,
-    interactive: bool,
-) -> Result<()> {
     let sources: Vec<String> = files
         .iter()
         .map(std::fs::read_to_string)
@@ -117,7 +69,7 @@ fn handle_multi_file(
     let file_refs: Vec<&str> = files.iter().map(std::string::String::as_str).collect();
     let target_stem = file_stem(&files[0]);
 
-    if interactive {
+    if !cli.no_interactive {
         return kai::interactive::run_interactive_multi(
             &source_refs,
             &file_refs,
@@ -133,30 +85,11 @@ fn handle_multi_file(
     let results =
         kai::extract_method_multi(&source_refs, start_line, end_line, &options, &target_stem)?;
 
-    output_multi_results(&sources, &results, files, cli.write, cli.diff)?;
+    output_results(&sources, &results, &files, cli.write, cli.diff)?;
     Ok(())
 }
 
-fn output_result(
-    original: &str,
-    refactored: &str,
-    file_path: &str,
-    write: bool,
-    show_diff: bool,
-) -> Result<()> {
-    if write {
-        std::fs::write(file_path, refactored)?;
-        eprintln!("Wrote refactored code to {}", file_path);
-    } else if show_diff {
-        let diff = kai::rewrite::unified_diff(original, refactored, file_path);
-        print!("{diff}");
-    } else {
-        print!("{refactored}");
-    }
-    Ok(())
-}
-
-fn output_multi_results(
+fn output_results(
     sources: &[String],
     results: &[String],
     files: &[String],

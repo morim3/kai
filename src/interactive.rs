@@ -6,7 +6,7 @@ use dialoguer::{Confirm, Input, MultiSelect};
 use crate::rewrite;
 use crate::scan::MatchedBlock;
 use crate::scope::FunctionSignature;
-use crate::{SourcedBlock, plan_extraction, plan_extraction_multi, scan};
+use crate::{SourcedBlock, plan_extraction_multi};
 
 // ── Validation ───────────────────────────────────────────────────────
 
@@ -193,44 +193,36 @@ fn prompt_block_selection(items: &[String]) -> Result<Vec<usize>> {
 }
 
 /// Step 1: Let the user select which matched blocks to include.
-fn select_blocks(source: &str, blocks: &[MatchedBlock]) -> Result<Vec<usize>> {
-    let items: Vec<String> = blocks
-        .iter()
-        .enumerate()
-        .map(|(i, b)| {
-            let preview = block_preview(source, b, 60);
-            format!(
-                "[{}] lines {}-{}: {}",
-                i + 1,
-                b.start_line,
-                b.end_line,
-                preview
-            )
-        })
-        .collect();
-    prompt_block_selection(&items)
-}
-
-/// Step 1 (multi-file): Let the user select which matched blocks to include.
 fn select_sourced_blocks(
     sources: &[&str],
     file_names: &[&str],
     blocks: &[SourcedBlock],
 ) -> Result<Vec<usize>> {
+    let multi_file = sources.len() > 1;
     let items: Vec<String> = blocks
         .iter()
         .enumerate()
         .map(|(i, sb)| {
             let source = sources[sb.source_index];
-            let preview = block_preview(source, &sb.block, 50);
-            format!(
-                "[{}] {} lines {}-{}: {}",
-                i + 1,
-                file_names[sb.source_index],
-                sb.block.start_line,
-                sb.block.end_line,
-                preview
-            )
+            let preview = block_preview(source, &sb.block, if multi_file { 50 } else { 60 });
+            if multi_file {
+                format!(
+                    "[{}] {} lines {}-{}: {}",
+                    i + 1,
+                    file_names[sb.source_index],
+                    sb.block.start_line,
+                    sb.block.end_line,
+                    preview
+                )
+            } else {
+                format!(
+                    "[{}] lines {}-{}: {}",
+                    i + 1,
+                    sb.block.start_line,
+                    sb.block.end_line,
+                    preview
+                )
+            }
         })
         .collect();
     prompt_block_selection(&items)
@@ -428,83 +420,10 @@ fn interactive_naming(sig: &mut FunctionSignature, block_stores: &[Vec<String>])
 
 // ── Main entry point ─────────────────────────────────────────────────
 
-/// Run the interactive extraction workflow.
+/// Run the interactive extraction workflow (single-file and multi-file).
 ///
 /// Flow: block selection → function name → param rename → return rename
 ///       → add returns → final validation → preview.
-pub fn run_interactive(
-    source: &str,
-    start_line: usize,
-    end_line: usize,
-    file_path: Option<&str>,
-    show_diff: bool,
-) -> Result<()> {
-    // Stage 1: Scan for matches.
-    let all_blocks = scan::find_matches(source, start_line, end_line)?;
-    if all_blocks.len() < 2 {
-        bail!(
-            "Only {} block(s) found. Need at least 2 matching blocks to extract a function.",
-            all_blocks.len()
-        );
-    }
-
-    // Step 1: Block selection.
-    let selected_indices = select_blocks(source, &all_blocks)?;
-    let blocks: Vec<MatchedBlock> = selected_indices
-        .iter()
-        .map(|&i| all_blocks[i].clone())
-        .collect();
-
-    // Stage 2: Compute extraction plan.
-    let plan = plan_extraction(source, &blocks, start_line, end_line)?;
-    let mut sig = plan.sig;
-
-    // Steps 2-5: Function name, parameter/return rename, add returns.
-    let func_name = interactive_naming(&mut sig, &plan.block_stores)?;
-
-    // Stage 3: Apply refactoring.
-    let result = rewrite::apply_refactoring(
-        source,
-        &blocks,
-        &plan.ref_node_positions,
-        &sig,
-        &func_name,
-        &plan.scope_ctx,
-        &plan.divergent_literal_offsets,
-    );
-
-    // Final safety check: ensure generated code is valid Python.
-    validate_output(&result)?;
-
-    // Preview and confirm.
-    if show_diff {
-        let filename = file_path.unwrap_or("<stdin>");
-        let diff = rewrite::unified_diff(source, &result, filename);
-        eprintln!("\n--- Preview (diff) ---");
-        print!("{diff}");
-    } else {
-        eprintln!("\n--- Preview ---");
-        print!("{result}");
-    }
-
-    if let Some(path) = file_path {
-        let write = Confirm::new()
-            .with_prompt("Write to file?")
-            .default(false)
-            .interact()?;
-        if write {
-            std::fs::write(path, &result)?;
-            eprintln!("Wrote refactored code to {path}");
-        }
-    }
-
-    Ok(())
-}
-
-/// Run the interactive extraction workflow for multiple files.
-///
-/// Same interactive flow as single-file, but scans across files
-/// and applies refactoring to all of them.
 pub fn run_interactive_multi(
     sources: &[&str],
     file_paths: &[&str],
@@ -571,8 +490,13 @@ pub fn run_interactive_multi(
 
     // Write.
     if write {
+        let prompt = if file_paths.len() == 1 {
+            "Write to file?"
+        } else {
+            "Write to all modified files?"
+        };
         let confirm = Confirm::new()
-            .with_prompt("Write to all modified files?")
+            .with_prompt(prompt)
             .default(false)
             .interact()?;
         if confirm {
@@ -591,6 +515,7 @@ pub fn run_interactive_multi(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scan;
     use crate::test_utils::make_sig;
 
     // ── Validation tests ──
