@@ -6,10 +6,9 @@ use ruff_python_ast::{Expr, FStringPart, InterpolatedStringElement, Stmt, String
 use ruff_text_size::Ranged;
 use similar::TextDiff;
 
-use crate::scan::SourcedBlock;
 use crate::diff_extract::quote_fstring_segment;
 use crate::normalize::indent_at_offset;
-use crate::scan::{MatchedBlock, ScopeContext, ScopeKind};
+use crate::scan::{MatchedBlock, ScopeContext, ScopeKind, SourcedBlock};
 use crate::scope::FunctionSignature;
 
 /// How the replacement text should be wrapped when substituted into source.

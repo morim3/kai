@@ -28,6 +28,27 @@ pub struct ScopeContext {
     pub parent_indent: Option<String>,
 }
 
+/// A matched block in the source file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchedBlock {
+    /// 1-based start line.
+    pub start_line: usize,
+    /// 1-based end line (inclusive).
+    pub end_line: usize,
+    /// Byte offset of the block start.
+    pub start_offset: usize,
+    /// Byte offset of the block end.
+    pub end_offset: usize,
+}
+
+/// A matched block tagged with the index of the source file it came from.
+#[derive(Debug, Clone)]
+pub struct SourcedBlock {
+    pub block: MatchedBlock,
+    /// 0 = target file, 1+ = additional files.
+    pub source_index: usize,
+}
+
 /// Result of a scope traversal: the innermost body and its scope context.
 pub struct ScopeInfo<'a> {
     /// The actual innermost body containing the target (may be a control flow body).
@@ -338,19 +359,6 @@ fn find_common_scope(
     make_scope_context(body, source, kind, class_def_offset, parent_indent)
 }
 
-/// A matched block in the source file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MatchedBlock {
-    /// 1-based start line.
-    pub start_line: usize,
-    /// 1-based end line (inclusive).
-    pub end_line: usize,
-    /// Byte offset of the block start.
-    pub start_offset: usize,
-    /// Byte offset of the block end.
-    pub end_offset: usize,
-}
-
 /// Scan the target file for blocks matching the target range, returning the hash and window size.
 ///
 /// This is the first stage of the multi-file pipeline: it computes the structural hash
@@ -419,14 +427,6 @@ pub fn find_matches_in_file(
     let mut matches = Vec::new();
     scan_all_bodies_recursive(source, top_body, target_hash, window_size, &mut matches);
     matches
-}
-
-/// A matched block tagged with the index of the source file it came from.
-#[derive(Debug, Clone)]
-pub struct SourcedBlock {
-    pub block: MatchedBlock,
-    /// 0 = target file, 1+ = additional files.
-    pub source_index: usize,
 }
 
 /// Scan target file and optional extra files for matching blocks.
