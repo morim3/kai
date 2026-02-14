@@ -17,6 +17,7 @@ pub enum UnsafeKind {
     Return,
     Yield,
     YieldFrom,
+    Nonlocal,
 }
 
 impl UnsafeKind {
@@ -27,6 +28,7 @@ impl UnsafeKind {
             UnsafeKind::Return => "return",
             UnsafeKind::Yield => "yield",
             UnsafeKind::YieldFrom => "yield from",
+            UnsafeKind::Nonlocal => "nonlocal",
         }
     }
 }
@@ -97,6 +99,9 @@ impl<'a> Visitor<'a> for SafetyChecker {
             Stmt::Return(r) => {
                 self.record_if_unsafe(UnsafeKind::Return, r.range().start().to_usize(), false);
             }
+            Stmt::Nonlocal(n) => {
+                self.record_if_unsafe(UnsafeKind::Nonlocal, n.range().start().to_usize(), false);
+            }
 
             Stmt::For(_) | Stmt::While(_) => {
                 self.loop_depth += 1;
@@ -150,6 +155,7 @@ mod tests {
             ("return x", UnsafeKind::Return),
             ("yield x", UnsafeKind::Yield),
             ("yield from gen()", UnsafeKind::YieldFrom),
+            ("nonlocal x", UnsafeKind::Nonlocal),
         ];
         for (code, expected_kind) in cases {
             let needs_loop_wrapper =
@@ -190,6 +196,10 @@ mod tests {
                 "continue inside block's own loop",
             ),
             ("def f():\n    return x", "return inside nested function"),
+            (
+                "def f():\n    nonlocal x\n    x = 1",
+                "nonlocal inside nested function",
+            ),
             ("f = lambda: (yield x)", "yield inside lambda"),
             ("x = 1\ny = x + 2", "no flow control at all"),
         ];
