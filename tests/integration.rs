@@ -80,10 +80,11 @@ fn run_fixture(dir: &Path) -> Result<(), String> {
 
     let (start, end) = parse_marker(&input);
     let options = parse_options(dir);
-    let result = match kai::extract_method_with_options(&input, start, end, &options) {
+    let mut results = match kai::extract_method_multi(&[input.as_str()], start, end, &options, "") {
         Ok(r) => r,
         Err(e) => return Err(format!("pipeline failed: {e}")),
     };
+    let result = results.swap_remove(0);
 
     if ruff_python_parser::parse_module(&result).is_err() {
         return Err(format!("output is not valid Python:\n{result}"));
@@ -107,7 +108,6 @@ fn run_multi_fixture(dir: &Path) -> Result<(), String> {
 
     let (start, end) = parse_marker(&input);
     let options = parse_options(dir);
-    let func_name = options.func_name.as_deref().unwrap_or("extracted_func_0");
 
     // Collect extra files.
     let extra_names = collect_extra_files(dir);
@@ -123,25 +123,8 @@ fn run_multi_fixture(dir: &Path) -> Result<(), String> {
     let mut sources: Vec<&str> = vec![input.as_str()];
     sources.extend(extra_sources.iter().map(|s| s.as_str()));
 
-    // Stage 1: Scan all files.
-    let all_blocks =
-        kai::scan_all_sources(&sources, start, end).map_err(|e| format!("scan failed: {e}"))?;
-
-    // Stage 2: Plan.
-    let plan = kai::plan_extraction_multi(&sources, &all_blocks, start, end)
-        .map_err(|e| format!("plan failed: {e}"))?;
-
-    // Stage 3: Apply.
-    let results = kai::rewrite::apply_refactoring_multi(
-        &sources,
-        &all_blocks,
-        &plan.ref_node_positions,
-        &plan.sig,
-        func_name,
-        &plan.scope_ctx,
-        "input", // target file stem
-        &plan.divergent_literal_offsets,
-    );
+    let results = kai::extract_method_multi(&sources, start, end, &options, "input")
+        .map_err(|e| format!("pipeline failed: {e}"))?;
 
     // Check target file output.
     if ruff_python_parser::parse_module(&results[0]).is_err() {
@@ -192,7 +175,7 @@ fn run_error_fixture(dir: &Path) {
         .unwrap_or_else(|e| panic!("failed to read {}/expected_error.txt: {e}", dir.display()));
 
     let (start, end) = parse_marker(&input);
-    let err = kai::extract_method(&input, start, end)
+    let err = kai::extract_method_multi(&[input.as_str()], start, end, &kai::ExtractOptions::default(), "")
         .expect_err(&format!("expected error for {}, but got Ok", dir.display()));
 
     assert!(

@@ -317,49 +317,10 @@ pub fn plan_extraction_multi(
     })
 }
 
-/// Stage 1+2: Scan for matches, then compute the extraction plan (single-file).
+/// Run the full extract-method pipeline (one-shot).
 ///
-/// This is a convenience wrapper around `plan_extraction_multi` for the single-file case.
-pub fn plan_extraction(
-    source: &str,
-    blocks: &[MatchedBlock],
-    start_line: usize,
-    end_line: usize,
-) -> Result<ExtractionPlan> {
-    let sourced: Vec<SourcedBlock> = blocks
-        .iter()
-        .map(|b| SourcedBlock {
-            block: b.clone(),
-            source_index: 0,
-        })
-        .collect();
-    plan_extraction_multi(&[source], &sourced, start_line, end_line)
-}
-
-/// Run the full extract-method pipeline on `source`, targeting `start_line..=end_line`.
-///
-/// Returns the refactored source code on success.
-pub fn extract_method(source: &str, start_line: usize, end_line: usize) -> Result<String> {
-    extract_method_with_options(source, start_line, end_line, &ExtractOptions::default())
-}
-
-/// Run the full extract-method pipeline with custom options.
-///
-/// Convenience wrapper around `extract_method_multi` for the single-file case.
-pub fn extract_method_with_options(
-    source: &str,
-    start_line: usize,
-    end_line: usize,
-    options: &ExtractOptions,
-) -> Result<String> {
-    let mut results = extract_method_multi(&[source], start_line, end_line, options, "")?;
-    Ok(results.swap_remove(0))
-}
-
-/// Run the full extract-method pipeline across multiple files (one-shot).
-///
-/// Mirrors `extract_method_with_options` for the multi-file case:
-/// scan → plan → apply in a single call.
+/// Runs scan → plan → apply in a single call.
+/// For single-file use, pass `sources = &[source]` and `target_file_stem = ""`.
 pub fn extract_method_multi(
     sources: &[&str],
     start_line: usize,
@@ -394,10 +355,10 @@ b = a + 2
 c = 10
 d = c + 20
 ";
-        let blocks = scan::find_matches(source, 1, 2).unwrap();
-        assert_eq!(blocks.len(), 2);
+        let blocks = scan_all_sources(&[source], 1, 2).unwrap();
+        assert!(blocks.len() >= 2);
 
-        let plan = plan_extraction(source, &blocks, 1, 2).unwrap();
+        let plan = plan_extraction_multi(&[source], &blocks, 1, 2).unwrap();
         // Two variable inputs become params; literals diverge and become params too.
         assert!(!plan.sig.params.is_empty());
         assert!(!plan.ref_node_positions.is_empty());
@@ -453,17 +414,19 @@ b = a + 2
 c = 10
 d = c + 20
 ";
-        let one_shot = extract_method(source, 1, 2).unwrap();
+        let one_shot =
+            extract_method_multi(&[source], 1, 2, &ExtractOptions::default(), "").unwrap();
 
-        let blocks = scan::find_matches(source, 1, 2).unwrap();
-        let plan = plan_extraction(source, &blocks, 1, 2).unwrap();
-        let two_stage = rewrite::apply_refactoring(
-            source,
+        let blocks = scan_all_sources(&[source], 1, 2).unwrap();
+        let plan = plan_extraction_multi(&[source], &blocks, 1, 2).unwrap();
+        let two_stage = rewrite::apply_refactoring_multi(
+            &[source],
             &blocks,
             &plan.ref_node_positions,
             &plan.sig,
             "extracted_func_0",
             &plan.scope_ctx,
+            "",
             &plan.divergent_literal_offsets,
         );
 

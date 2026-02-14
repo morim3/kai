@@ -638,7 +638,14 @@ mod tests {
         func_name: &str,
         modify_sig: impl FnOnce(&mut FunctionSignature),
     ) -> String {
-        let plan = crate::plan_extraction(source, blocks, start, end).unwrap();
+        let sourced: Vec<crate::SourcedBlock> = blocks
+            .iter()
+            .map(|b| crate::SourcedBlock {
+                block: b.clone(),
+                source_index: 0,
+            })
+            .collect();
+        let plan = crate::plan_extraction_multi(&[source], &sourced, start, end).unwrap();
         let mut sig = plan.sig.clone();
         modify_sig(&mut sig);
         assert!(validate_rename_map(&sig).is_ok());
@@ -661,7 +668,9 @@ mod tests {
     #[test]
     fn simulated_interactive_matches_non_interactive() {
         let source = "a = 1\nb = a + 2\nc = 10\nd = c + 20\ne = 100\nf = e + 200\n";
-        let expected = crate::extract_method(source, 1, 2).unwrap();
+        let expected = crate::extract_method_multi(
+            &[source], 1, 2, &crate::ExtractOptions::default(), "",
+        ).unwrap().swap_remove(0);
         let blocks = scan::find_matches(source, 1, 2).unwrap();
         let result = plan_apply(source, &blocks, 1, 2, "extracted_func_0", |_| {});
         assert_eq!(result, expected);
@@ -767,7 +776,11 @@ mod tests {
     fn simulated_add_returns_produces_valid_python() {
         let source = "a = 1\nb = a + 2\nprint(b)\nc = 10\nd = c + 20\nprint(d)\n";
         let blocks = scan::find_matches(source, 1, 2).unwrap();
-        let plan = crate::plan_extraction(source, &blocks, 1, 2).unwrap();
+        let sourced: Vec<crate::SourcedBlock> = blocks
+            .iter()
+            .map(|b| crate::SourcedBlock { block: b.clone(), source_index: 0 })
+            .collect();
+        let plan = crate::plan_extraction_multi(&[source], &sourced, 1, 2).unwrap();
         let mut sig = plan.sig.clone();
 
         let candidates = return_candidates(&sig, &plan.block_stores);
@@ -788,7 +801,11 @@ mod tests {
     fn auto_sync_linked_return_on_param_rename() {
         let source = "a += 1\nprint(a)\nb += 1\nprint(b)\n";
         let blocks = scan::find_matches(source, 1, 1).unwrap();
-        let plan = crate::plan_extraction(source, &blocks, 1, 1).unwrap();
+        let sourced: Vec<crate::SourcedBlock> = blocks
+            .iter()
+            .map(|b| crate::SourcedBlock { block: b.clone(), source_index: 0 })
+            .collect();
+        let plan = crate::plan_extraction_multi(&[source], &sourced, 1, 1).unwrap();
         let mut sig = plan.sig.clone();
 
         assert_eq!(
