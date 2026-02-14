@@ -128,7 +128,7 @@ pub fn scan_all_sources(
 
     if all_blocks.len() < 2 {
         bail!(
-            "Only {} block(s) found across all files. Need at least 2 matching blocks.",
+            "Only {} block(s) found. Need at least 2 matching blocks to extract a function.",
             all_blocks.len()
         );
     }
@@ -344,31 +344,16 @@ pub fn extract_method(source: &str, start_line: usize, end_line: usize) -> Resul
 }
 
 /// Run the full extract-method pipeline with custom options.
+///
+/// Convenience wrapper around `extract_method_multi` for the single-file case.
 pub fn extract_method_with_options(
     source: &str,
     start_line: usize,
     end_line: usize,
     options: &ExtractOptions,
 ) -> Result<String> {
-    let blocks = scan::find_matches(source, start_line, end_line)?;
-    if blocks.len() < 2 {
-        bail!(
-            "Only {} block(s) found. Need at least 2 matching blocks to extract a function.",
-            blocks.len()
-        );
-    }
-
-    let plan = plan_extraction(source, &blocks, start_line, end_line)?;
-    let func_name = options.func_name.as_deref().unwrap_or("extracted_func_0");
-    Ok(rewrite::apply_refactoring(
-        source,
-        &blocks,
-        &plan.ref_node_positions,
-        &plan.sig,
-        func_name,
-        &plan.scope_ctx,
-        &plan.divergent_literal_offsets,
-    ))
+    let mut results = extract_method_multi(&[source], start_line, end_line, options, "")?;
+    Ok(results.swap_remove(0))
 }
 
 /// Run the full extract-method pipeline across multiple files (one-shot).
