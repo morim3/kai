@@ -162,12 +162,30 @@ impl<'a> Visitor<'a> for NormalizeVisitor<'_> {
         self.hash_tag(tag);
 
         // Hash non-Expr fields that walk_stmt doesn't visit.
+        // Rule 1: flags that change operation semantics.
+        // Rule 3: external references (import module/names, attribute names).
         match stmt {
             Stmt::For(f) => f.is_async.hash(&mut self.hasher),
             Stmt::With(w) => w.is_async.hash(&mut self.hasher),
             Stmt::Try(t) => t.is_star.hash(&mut self.hasher),
             Stmt::AnnAssign(a) => a.simple.hash(&mut self.hasher),
-            Stmt::ImportFrom(i) => i.level.hash(&mut self.hasher),
+            Stmt::Import(imp) => {
+                // Module names are external references (Rule 3).
+                // asname is a local binding (Rule 2) — not hashed.
+                for alias in &imp.names {
+                    self.hash_tag(alias.name.as_str());
+                }
+            }
+            Stmt::ImportFrom(imp) => {
+                imp.level.hash(&mut self.hasher);
+                // Module and imported names are external references (Rule 3).
+                if let Some(ref module) = imp.module {
+                    self.hash_tag(module.as_str());
+                }
+                for alias in &imp.names {
+                    self.hash_tag(alias.name.as_str());
+                }
+            }
             _ => {}
         }
 
@@ -436,6 +454,11 @@ mod tests {
                 "s = f\"{y!r}\"",
                 "fstring with same conversion flag",
             ),
+            (
+                "import os as x",
+                "import os as y",
+                "import with different asname (local binding)",
+            ),
         ];
         for (a, b, label) in cases {
             assert_eq!(
@@ -518,6 +541,12 @@ mod tests {
             ("x: int = 1", "(x): int = 1", "AnnAssign simple"),
             ("x = (a, b)", "x = a, b", "Tuple parenthesized"),
             ("from . import x", "from .. import x", "ImportFrom level"),
+            ("import os", "import sys", "Import module name"),
+            (
+                "from os import path",
+                "from sys import argv",
+                "ImportFrom module and name",
+            ),
         ];
         for (a, b, label) in cases {
             assert_ne!(
