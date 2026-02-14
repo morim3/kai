@@ -162,23 +162,23 @@ impl<'a> Visitor<'a> for NormalizeVisitor<'_> {
         self.hash_tag(tag);
 
         // Hash non-Expr fields that walk_stmt doesn't visit.
-        // Rule 1: flags that change operation semantics.
-        // Rule 3: external references (import module/names, attribute names).
+        // Every variant is listed explicitly so the compiler catches new variants.
         match stmt {
+            // Rule 1: flags that change operation semantics.
+            Stmt::FunctionDef(f) => f.is_async.hash(&mut self.hasher),
             Stmt::For(f) => f.is_async.hash(&mut self.hasher),
             Stmt::With(w) => w.is_async.hash(&mut self.hasher),
             Stmt::Try(t) => t.is_star.hash(&mut self.hasher),
             Stmt::AnnAssign(a) => a.simple.hash(&mut self.hasher),
+            // Rule 3: external references (import module/names).
+            // asname is a local binding (Rule 2) — not hashed.
             Stmt::Import(imp) => {
-                // Module names are external references (Rule 3).
-                // asname is a local binding (Rule 2) — not hashed.
                 for alias in &imp.names {
                     self.hash_tag(alias.name.as_str());
                 }
             }
             Stmt::ImportFrom(imp) => {
                 imp.level.hash(&mut self.hasher);
-                // Module and imported names are external references (Rule 3).
                 if let Some(ref module) = imp.module {
                     self.hash_tag(module.as_str());
                 }
@@ -186,7 +186,38 @@ impl<'a> Visitor<'a> for NormalizeVisitor<'_> {
                     self.hash_tag(alias.name.as_str());
                 }
             }
-            _ => {}
+            // Rule 2: normalize variable names in scope declarations
+            // (preserves count and identity pattern via positional IDs).
+            Stmt::Global(g) => {
+                for name in &g.names {
+                    let var_id = self.var_id(name.as_str());
+                    self.hash_usize(var_id);
+                }
+            }
+            Stmt::Nonlocal(n) => {
+                for name in &n.names {
+                    let var_id = self.var_id(name.as_str());
+                    self.hash_usize(var_id);
+                }
+            }
+            // No non-Expr fields to hash. name (Rule 2: local binding) is
+            // correctly excluded for ClassDef. All other children are walked.
+            Stmt::ClassDef(_)
+            | Stmt::Return(_)
+            | Stmt::Delete(_)
+            | Stmt::Assign(_)
+            | Stmt::AugAssign(_)
+            | Stmt::TypeAlias(_)
+            | Stmt::While(_)
+            | Stmt::If(_)
+            | Stmt::Match(_)
+            | Stmt::Raise(_)
+            | Stmt::Assert(_)
+            | Stmt::Expr(_)
+            | Stmt::Pass(_)
+            | Stmt::Break(_)
+            | Stmt::Continue(_)
+            | Stmt::IpyEscapeCommand(_) => {}
         }
 
         walk_stmt(self, stmt);
@@ -459,6 +490,13 @@ mod tests {
                 "import os as y",
                 "import with different asname (local binding)",
             ),
+            (
+                "def foo():\n    pass",
+                "def bar():\n    pass",
+                "FunctionDef name is local binding",
+            ),
+            ("global x", "global y", "global name is local binding"),
+            ("nonlocal x", "nonlocal y", "nonlocal name is local binding"),
         ];
         for (a, b, label) in cases {
             assert_eq!(
@@ -547,6 +585,13 @@ mod tests {
                 "from sys import argv",
                 "ImportFrom module and name",
             ),
+            (
+                "def foo():\n    pass",
+                "async def foo():\n    pass",
+                "FunctionDef is_async",
+            ),
+            ("global x", "global x, y", "Global name count"),
+            ("nonlocal x", "nonlocal x, y", "Nonlocal name count"),
         ];
         for (a, b, label) in cases {
             assert_ne!(
