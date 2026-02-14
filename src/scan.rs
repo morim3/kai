@@ -421,6 +421,52 @@ pub fn find_matches_in_file(
     matches
 }
 
+/// A matched block tagged with the index of the source file it came from.
+#[derive(Debug, Clone)]
+pub struct SourcedBlock {
+    pub block: MatchedBlock,
+    /// 0 = target file, 1+ = additional files.
+    pub source_index: usize,
+}
+
+/// Scan target file and optional extra files for matching blocks.
+///
+/// Returns all matching blocks tagged with their source file index.
+/// `sources[0]` is the target file; remaining entries are extra files to search.
+pub fn scan_all_sources(
+    sources: &[&str],
+    start_line: usize,
+    end_line: usize,
+) -> Result<Vec<SourcedBlock>> {
+    let (target_hash, window_size, target_matches) =
+        find_matches_with_hash(sources[0], start_line, end_line)?;
+
+    let mut all_blocks: Vec<SourcedBlock> = target_matches
+        .into_iter()
+        .map(|b| SourcedBlock {
+            block: b,
+            source_index: 0,
+        })
+        .collect();
+
+    for (i, src) in sources.iter().enumerate().skip(1) {
+        let extra = find_matches_in_file(src, target_hash, window_size);
+        all_blocks.extend(extra.into_iter().map(|b| SourcedBlock {
+            block: b,
+            source_index: i,
+        }));
+    }
+
+    if all_blocks.len() < 2 {
+        bail!(
+            "Only {} block(s) found. Need at least 2 matching blocks to extract a function.",
+            all_blocks.len()
+        );
+    }
+
+    Ok(all_blocks)
+}
+
 /// Recursively scan all bodies (module, function, class, control flow) in the AST
 /// for matching blocks.
 fn scan_all_bodies_recursive(

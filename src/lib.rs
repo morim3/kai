@@ -49,7 +49,7 @@ use ruff_python_parser::Parsed;
 use ruff_text_size::Ranged;
 
 use diff_extract::Divergence;
-use scan::{MatchedBlock, ScopeContext, ScopeKind};
+use scan::{MatchedBlock, ScopeContext, ScopeKind, SourcedBlock, scan_all_sources};
 use scope::FunctionSignature;
 
 /// Per-block statement slices and their after-block statements.
@@ -88,52 +88,6 @@ pub struct ExtractionPlan {
     /// Used to avoid replacing non-divergent literals that happen to share
     /// the same text as a divergent one.
     pub divergent_literal_offsets: Vec<usize>,
-}
-
-/// A matched block tagged with the index of the source file it came from.
-#[derive(Debug, Clone)]
-pub struct SourcedBlock {
-    pub block: MatchedBlock,
-    /// 0 = target file, 1+ = additional files.
-    pub source_index: usize,
-}
-
-/// Stage 0: Scan target file and optional extra files for matching blocks.
-///
-/// Returns all matching blocks tagged with their source file index.
-/// `sources[0]` is the target file; remaining entries are extra files to search.
-pub fn scan_all_sources(
-    sources: &[&str],
-    start_line: usize,
-    end_line: usize,
-) -> Result<Vec<SourcedBlock>> {
-    let (target_hash, window_size, target_matches) =
-        scan::find_matches_with_hash(sources[0], start_line, end_line)?;
-
-    let mut all_blocks: Vec<SourcedBlock> = target_matches
-        .into_iter()
-        .map(|b| SourcedBlock {
-            block: b,
-            source_index: 0,
-        })
-        .collect();
-
-    for (i, src) in sources.iter().enumerate().skip(1) {
-        let extra = scan::find_matches_in_file(src, target_hash, window_size);
-        all_blocks.extend(extra.into_iter().map(|b| SourcedBlock {
-            block: b,
-            source_index: i,
-        }));
-    }
-
-    if all_blocks.len() < 2 {
-        bail!(
-            "Only {} block(s) found. Need at least 2 matching blocks to extract a function.",
-            all_blocks.len()
-        );
-    }
-
-    Ok(all_blocks)
 }
 
 /// Determine the scope context for function placement.
