@@ -433,6 +433,8 @@ pub fn find_matches_in_file(
 ///
 /// Returns all matching blocks tagged with their source file index.
 /// `sources[0]` is the target file; remaining entries are extra files to search.
+/// The target block itself is always included, so this supports plain
+/// single-site Extract Method even when no duplicates are found elsewhere.
 pub fn scan_all_sources(
     sources: &[&str],
     start_line: usize,
@@ -455,13 +457,6 @@ pub fn scan_all_sources(
             block: b,
             source_index: i,
         }));
-    }
-
-    if all_blocks.len() < 2 {
-        bail!(
-            "Only {} block(s) found. Need at least 2 matching blocks to extract a function.",
-            all_blocks.len()
-        );
     }
 
     Ok(all_blocks)
@@ -589,6 +584,21 @@ c = z * 3
 ";
         let matches = find_matches(code, 1, 1).unwrap();
         assert_eq!(matches.len(), 1, "Different operators should not match");
+    }
+
+    #[test]
+    fn scan_all_sources_keeps_target_when_no_duplicates_exist() {
+        let code = "\
+a = 1
+b = a + 2
+x = \"hello\"
+print(x)
+";
+        let blocks = scan_all_sources(&[code], 1, 2).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].source_index, 0);
+        assert_eq!(blocks[0].block.start_line, 1);
+        assert_eq!(blocks[0].block.end_line, 2);
     }
 
     #[test]

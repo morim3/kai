@@ -6,8 +6,17 @@ AIがPROGRESSを管理するためのもの。PhaseやIter内のProgressを管�
 - Phase 1-5 + Iter 1-12 完了、バグ修正6件完了
 - 59 フィクスチャ PASS、既知バグ 0 件
 - fuzz test 106/106 PASS
+- Current goal: 重複が見つからない場合でも、選択範囲だけで単一サイトの Extract Method を実行できるようにする
 
 ## Completed
+
+### 2026-03-10: 単一ブロック Extract Method 対応 ✅
+- `scan_all_sources()` の「2ブロック以上必須」を削除し、target block 単体でも `plan_extraction_multi()` / `apply_refactoring_multi()` へ進めるようにした
+- interactive mode の block selection を 1 件以上で成立するように変更し、重複があるケースでも単一選択の Extract Method を許可した
+- 単一ブロック抽出の unit test を追加した (`src/lib.rs`, `src/scan.rs`)
+- `error_single_match`, `fstring_conversion_mismatch`, `match_divergence` fixture を成功ケースへ更新した
+- README を更新し、単一サイト Extract Method も正式な挙動として明記した
+- 検証: `cargo fmt --check`, `cargo test`, `cargo clippy --all-targets -- -D warnings` PASS
 
 ### Phase 1-5: 基盤実装 ✅
 AST正規化+ハッシュ、類似ブロックスキャン、変数スコープ解析、コード書き換え+差分出力、CLI改善
@@ -50,6 +59,8 @@ AST正規化+ハッシュ、類似ブロックスキャン、変数スコープ�
 - **クロスファイル**: `ScopeKind::Module` に強制、`from X import func` 自動挿入
 
 ## Failed Approaches
+- `fstring_conversion_mismatch` fixture の期待値を最初に誤読した
+  - `# kai: 2-3` は block 全体ではなく `msg = ...` のみを抽出しており、`print(msg)` は after_block 扱いで return/call に反映される
 - モジュールスコープ名の自動除外: revert済み
 - クラスbodyに self 付きメソッド配置: class body に self が存在しないため不可
 - Class スコープで全 store を output: 過去に不整合として revert → Iter 12 で再導入（必要）

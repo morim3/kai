@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use anyhow::{Result, bail};
 use dialoguer::{Confirm, Input, MultiSelect};
 
+use crate::plan_extraction_multi;
 use crate::rewrite;
 use crate::scan::MatchedBlock;
-use crate::scope::FunctionSignature;
-use crate::plan_extraction_multi;
 use crate::scan::SourcedBlock;
+use crate::scope::FunctionSignature;
 
 // ── Validation ───────────────────────────────────────────────────────
 
@@ -168,7 +168,7 @@ pub fn return_candidates(sig: &FunctionSignature, block_stores: &[Vec<String>]) 
 
 // ── Interactive steps ────────────────────────────────────────────────
 
-/// Shared interactive block selection: display items, let user toggle, require ≥2.
+/// Shared interactive block selection: display items, let user toggle, require ≥1.
 fn prompt_block_selection(items: &[String]) -> Result<Vec<usize>> {
     if items.len() <= 2 {
         return Ok((0..items.len()).collect());
@@ -186,8 +186,8 @@ fn prompt_block_selection(items: &[String]) -> Result<Vec<usize>> {
         .defaults(&defaults)
         .interact()?;
 
-    if selections.len() < 2 {
-        bail!("Need at least 2 blocks selected for extraction.");
+    if selections.is_empty() {
+        bail!("Need at least 1 block selected for extraction.");
     }
 
     Ok(selections)
@@ -669,9 +669,10 @@ mod tests {
     #[test]
     fn simulated_interactive_matches_non_interactive() {
         let source = "a = 1\nb = a + 2\nc = 10\nd = c + 20\ne = 100\nf = e + 200\n";
-        let expected = crate::extract_method_multi(
-            &[source], 1, 2, &crate::ExtractOptions::default(), "",
-        ).unwrap().swap_remove(0);
+        let expected =
+            crate::extract_method_multi(&[source], 1, 2, &crate::ExtractOptions::default(), "")
+                .unwrap()
+                .swap_remove(0);
         let blocks = scan::find_matches(source, 1, 2).unwrap();
         let result = plan_apply(source, &blocks, 1, 2, "extracted_func_0", |_| {});
         assert_eq!(result, expected);
@@ -779,7 +780,10 @@ mod tests {
         let blocks = scan::find_matches(source, 1, 2).unwrap();
         let sourced: Vec<crate::scan::SourcedBlock> = blocks
             .iter()
-            .map(|b| crate::scan::SourcedBlock { block: b.clone(), source_index: 0 })
+            .map(|b| crate::scan::SourcedBlock {
+                block: b.clone(),
+                source_index: 0,
+            })
             .collect();
         let plan = crate::plan_extraction_multi(&[source], &sourced, 1, 2).unwrap();
         let mut sig = plan.sig.clone();
@@ -804,7 +808,10 @@ mod tests {
         let blocks = scan::find_matches(source, 1, 1).unwrap();
         let sourced: Vec<crate::scan::SourcedBlock> = blocks
             .iter()
-            .map(|b| crate::scan::SourcedBlock { block: b.clone(), source_index: 0 })
+            .map(|b| crate::scan::SourcedBlock {
+                block: b.clone(),
+                source_index: 0,
+            })
             .collect();
         let plan = crate::plan_extraction_multi(&[source], &sourced, 1, 1).unwrap();
         let mut sig = plan.sig.clone();

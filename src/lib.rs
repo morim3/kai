@@ -386,4 +386,31 @@ d = c + 20
 
         assert_eq!(one_shot, two_stage, "Two-stage should match one-shot");
     }
+
+    #[test]
+    fn extract_method_multi_supports_single_block_extraction() {
+        let source = "\
+a = 1
+b = a + 2
+x = \"hello\"
+print(x)
+";
+        let result = extract_method_multi(&[source], 1, 2, &ExtractOptions::default(), "")
+            .unwrap()
+            .swap_remove(0);
+
+        assert_eq!(
+            result,
+            "\
+def extracted_func_0():
+    ret_0 = 1
+    ret_1 = ret_0 + 2
+    return ret_0, ret_1
+
+a, b = extracted_func_0()
+x = \"hello\"
+print(x)
+"
+        );
+    }
 }

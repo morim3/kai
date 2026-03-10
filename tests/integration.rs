@@ -175,8 +175,14 @@ fn run_error_fixture(dir: &Path) {
         .unwrap_or_else(|e| panic!("failed to read {}/expected_error.txt: {e}", dir.display()));
 
     let (start, end) = parse_marker(&input);
-    let err = kai::extract_method_multi(&[input.as_str()], start, end, &kai::ExtractOptions::default(), "")
-        .expect_err(&format!("expected error for {}, but got Ok", dir.display()));
+    let err = kai::extract_method_multi(
+        &[input.as_str()],
+        start,
+        end,
+        &kai::ExtractOptions::default(),
+        "",
+    )
+    .expect_err(&format!("expected error for {}, but got Ok", dir.display()));
 
     assert!(
         err.to_string().contains(expected_error.trim()),

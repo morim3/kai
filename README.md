@@ -1,6 +1,6 @@
 # kai
 
-Python Extract Method refactoring tool. Finds structurally identical code blocks and extracts them into a shared function.
+Python Extract Method refactoring tool. Extracts the selected block into a function, and when structurally identical blocks exist, rewrites those matches into the same shared function too.
 
 ## Example
 
@@ -62,7 +62,7 @@ class Dashboard:
         self.display(avg_clicks)
 ```
 
-4 blocks across module level, a function, and a class method — all detected and extracted into one shared function. In interactive mode (default), you choose the function name and parameter names.
+4 blocks across module level, a function, and a class method are all detected and extracted into one shared function. If no duplicate exists, `kai` still performs a normal single-site Extract Method on the selected range. In interactive mode (default), you choose the function name and parameter names.
 
 ## Usage
 
@@ -74,6 +74,7 @@ kai FILE [FILE...] START END [OPTIONS]
 kai example.py 1 2                    # interactive mode (default)
 kai example.py 1 2 --diff             # unified diff output
 kai example.py 1 2 --write            # write back to file
+kai unique_block.py 10 14             # single-site Extract Method
 kai a.py b.py c.py 1 2               # multi-file refactoring
 kai example.py 1 2 --no-interactive   # non-interactive (for scripts/CI)
 ```
